@@ -5,163 +5,219 @@ ini_set('display_errors', 1);
 
 include "db.php";
 
-// ===================== HELPER =====================
-function errorResponse($msg, $error = null) {
+// ================= RESPONSE =================
+function response($status, $message, $data = null) {
     echo json_encode([
-        "status" => false,
-        "message" => $msg,
-        "error" => $error
-    ]);
-    exit;
-}
-
-// ===================== SAFE TYPE =====================
-$type = $_GET['type'] ?? '';
-
-// ===================== GET ALL ORDERS =====================
-if ($type == 'get_orders') {
-
-    $sql = "
-        SELECT invoice_no,
-               customer_name,
-               to_branch,
-               order_date,
-               SUM(quantity) AS quantity,
-               SUM(total_price) AS total_amount
-        FROM orders
-        GROUP BY invoice_no, customer_name, to_branch, order_date
-        ORDER BY invoice_no DESC
-    ";
-
-    $result = sqlsrv_query($conn, $sql);
-
-    if ($result === false) {
-        errorResponse("SQL Error", sqlsrv_errors());
-    }
-
-    $data = [];
-
-    while ($row = sqlsrv_fetch_array($result, SQLSRV_FETCH_ASSOC)) {
-        $data[] = $row;
-    }
-
-    echo json_encode([
-        "status" => true,
+        "status" => $status,
+        "message" => $message,
         "data" => $data
     ]);
     exit;
 }
 
-// ===================== CREATE ORDER =====================
+// ================= JSON SUPPORT =================
+$input = json_decode(file_get_contents("php://input"), true);
+
+$type = $_GET['type'] ?? '';
+
+try {
+
+// =====================================================
+// CREATE ORDER
+// =====================================================
 if ($type == 'create_order') {
 
-    $invoice_no = $_POST['invoice_no'] ?? '';
-    $customer_name = $_POST['customer_name'] ?? '';
-    $order_date = $_POST['order_date'] ?? '';
-    $to_branch = $_POST['to_branch'] ?? '';
+    // ✅ SAFE INVOICE GENERATION
+    $invoiceQuery = sqlsrv_query($conn, "
+        SELECT ISNULL(MAX(TRY_CAST(invoice_no AS BIGINT)),0) + 1 AS new_invoice
+        FROM orders
+    ");
 
-    if (!$invoice_no || !$customer_name) {
-        errorResponse("Missing required fields");
+    if ($invoiceQuery === false) {
+        response(false, "Invoice generation failed", sqlsrv_errors());
     }
 
-    $product_name = $_POST['product_name'] ?? [];
-    $product_code = $_POST['product_code'] ?? [];
-    $quantity = $_POST['quantity'] ?? [];
-    $price = $_POST['price'] ?? [];
+    $row = sqlsrv_fetch_array($invoiceQuery, SQLSRV_FETCH_ASSOC);
+    $invoice_no = (string)$row['new_invoice'];
 
-    if (!is_array($product_name)) {
-        $product_name = [$product_name];
-        $product_code = [$product_code];
-        $quantity = [$quantity];
-        $price = [$price];
+    // ================= INPUT =================
+    $customer_name = trim($input['customer_name'] ?? $_POST['customer_name'] ?? '');
+    $address = $input['address'] ?? $_POST['address'] ?? '';
+    $contact_no = $input['contact_no'] ?? $_POST['contact_no'] ?? '';
+    $gst_no = $input['gst_no'] ?? $_POST['gst_no'] ?? '';
+    $order_date = $input['order_date'] ?? $_POST['order_date'] ?? '';
+    
+    // ✅ DEFAULT MUMBAI
+    $to_branch = $input['to_branch'] ?? $_POST['to_branch'] ?? 'Mumbai';
+    $created_by = intval($input['created_by'] ?? $_POST['created_by'] ?? 0);
+
+    if ($customer_name == '') {
+        response(false, "Customer name required");
     }
 
-    $count = count($product_name);
+    // ================= CUSTOMER =================
+    $cust = sqlsrv_query($conn,
+        "SELECT TOP 1 customer_id 
+         FROM customers 
+         WHERE LOWER(LTRIM(RTRIM(customer_name))) 
+         LIKE LOWER('%' + ? + '%')",
+        [$customer_name]
+    );
 
-    if (
-        $count == 0 ||
-        $count != count($product_code) ||
-        $count != count($quantity) ||
-        $count != count($price)
-    ) {
-        errorResponse("Product data mismatch");
+    if ($cust === false) {
+        response(false, "Customer query failed", sqlsrv_errors());
+    }
+
+    $customer = sqlsrv_fetch_array($cust, SQLSRV_FETCH_ASSOC);
+
+    if (!$customer) {
+        response(false, "Customer not found", ["name" => $customer_name]);
+    }
+
+    $customer_id = $customer['customer_id'];
+
+    // ================= PRODUCTS =================
+    $product_name = $input['product_name'] ?? $_POST['product_name'] ?? [];
+    $product_code = $input['product_code'] ?? $_POST['product_code'] ?? [];
+    $qty = $input['quantity'] ?? $_POST['quantity'] ?? [];
+    $price = $input['price'] ?? $_POST['price'] ?? [];
+    $gst = $input['gst_percent'] ?? $_POST['gst_percent'] ?? [];
+    $gst_type = $input['gst_type'] ?? $_POST['gst_type'] ?? [];
+
+    if (!is_array($product_name) || count($product_name) == 0) {
+        response(false, "Invalid product format");
     }
 
     $total_amount = 0;
 
-    $sql = "
-        INSERT INTO orders
-        (invoice_no, customer_name, product_name, product_code,
-         quantity, sale_price, total_price, to_branch, order_date, fulfilled, created_on)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
-    ";
+    for ($i = 0; $i < count($product_name); $i++) {
 
-    for ($i = 0; $i < $count; $i++) {
+        $pname = trim($product_name[$i] ?? '');
+        $pcode = trim($product_code[$i] ?? '');
 
-        $total = $quantity[$i] * $price[$i];
-        $total_amount += $total;
+        if ($pname == '' || $pcode == '') continue;
+
+        // ================= PRODUCT CHECK =================
+        $prod = sqlsrv_query($conn,
+            "SELECT TOP 1 product_name 
+             FROM product_detail_description
+             WHERE LOWER(LTRIM(RTRIM(product_name))) 
+             LIKE LOWER('%' + ? + '%')",
+            [$pname]
+        );
+
+        if ($prod === false) {
+            response(false, "Product query failed", sqlsrv_errors());
+        }
+
+        $product = sqlsrv_fetch_array($prod, SQLSRV_FETCH_ASSOC);
+
+        if (!$product) {
+            response(false, "Product not found", ["product" => $pname]);
+        }
+
+        // ================= CALC =================
+        $q = floatval($qty[$i] ?? 0);
+        $p = floatval($price[$i] ?? 0);
+        $g = floatval($gst[$i] ?? 0);
+        $type_gst = $gst_type[$i] ?? 'Exclusive';
+
+        if ($q <= 0 || $p <= 0) continue;
+
+        $base_total = $q * $p;
+
+        // ✅ GST SPLIT
+        $cgst = $g / 2;
+        $sgst = $g / 2;
+
+        if ($type_gst == 'Exclusive') {
+            $gst_amount = ($base_total * $g) / 100;
+            $final_amount = $base_total + $gst_amount;
+        } else {
+            $gst_amount = ($base_total * $g) / (100 + $g);
+            $final_amount = $base_total;
+        }
+
+        $total_amount += $final_amount;
+
+        // ================= INSERT =================
+        $sql = "INSERT INTO orders
+        (invoice_no, customer_id, customer_name,
+         address, contact_no, gst_no,
+         product_name, product_code, quantity, sale_price,
+         total_price, final_amount,
+         gst_perc, cgst, sgst, gst_type,
+         order_date, fulfilled, to_branch, created_by, created_on)
+        VALUES (?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, GETDATE())";
 
         $params = [
             $invoice_no,
+            $customer_id,
             $customer_name,
-            $product_name[$i],
-            $product_code[$i],
-            $quantity[$i],
-            $price[$i],
-            $total,
-            $to_branch,
+            $address,
+            $contact_no,
+            $gst_no,
+
+            $pname,
+            $pcode,
+            $q,
+            $p,
+
+            $base_total,
+            $final_amount,
+
+            $g,
+            $cgst,
+            $sgst,
+            $type_gst,
+
             $order_date,
-            0
+            0, // fulfilled
+            $to_branch,
+            $created_by
         ];
 
-        $result = sqlsrv_query($conn, $sql, $params);
+        $res = sqlsrv_query($conn, $sql, $params);
 
-        if ($result === false) {
-            errorResponse("Insert failed", sqlsrv_errors());
+        if ($res === false) {
+            response(false, "Insert failed", sqlsrv_errors());
         }
     }
 
-    // ================= BILL DETAILS =================
-    $bill_sql = "
-        INSERT INTO bill_details
-        (invoice_no, customer_name, total_amount, received_amount, balance_amount, created_on)
-        VALUES (?, ?, ?, 0, ?, GETDATE())
-    ";
-
-    $bill = sqlsrv_query($conn, $bill_sql, [
-        $invoice_no,
-        $customer_name,
-        $total_amount,
-        $total_amount
-    ]);
+    // ================= BILL =================
+    $bill = sqlsrv_query($conn,
+        "INSERT INTO bill_details 
+        (invoice_no, customer_name, total_amount, created_on)
+        VALUES (?, ?, ?, GETDATE())",
+        [$invoice_no, $customer_name, $total_amount]
+    );
 
     if ($bill === false) {
-        errorResponse("Bill insert failed", sqlsrv_errors());
+        response(false, "Bill insert failed", sqlsrv_errors());
     }
 
-    echo json_encode([
-        "status" => true,
-        "message" => "Order created successfully",
+    response(true, "Order created successfully", [
         "invoice_no" => $invoice_no,
-        "total_amount" => $total_amount
+        "total_amount" => round($total_amount, 2)
     ]);
-    exit;
 }
 
-// ===================== ORDER DETAILS =====================
-if ($type == 'order_detail') {
+elseif ($type == "search_product") {
 
-    $invoice_no = $_GET['invoice_no'] ?? '';
+    $term = $_GET['term'] ?? '';
 
-    if (!$invoice_no) {
-        errorResponse("Invoice number required");
-    }
+    $sql = "SELECT TOP 20 product_name, product_code
+            FROM product_detail_description
+            WHERE product_name LIKE '%' + ? + '%'";
 
-    $sql = "SELECT * FROM orders WHERE invoice_no = ?";
-    $stmt = sqlsrv_query($conn, $sql, [$invoice_no]);
+    $stmt = sqlsrv_query($conn, $sql, [$term]);
 
     if ($stmt === false) {
-        errorResponse("Fetch failed", sqlsrv_errors());
+        response(false, "Search failed", sqlsrv_errors());
     }
 
     $data = [];
@@ -170,87 +226,15 @@ if ($type == 'order_detail') {
         $data[] = $row;
     }
 
-    echo json_encode([
-        "status" => true,
-        "data" => $data
-    ]);
-    exit;
+    response(true, "Success", $data);
 }
 
-// ===================== PAYMENT =====================
-if ($type == 'payment') {
-
-    $invoice_no = $_POST['invoice_no'] ?? '';
-    $amount = $_POST['amount'] ?? 0;
-
-    if (!$invoice_no || !$amount) {
-        errorResponse("Invalid payment data");
-    }
-
-    // GET CURRENT DATA
-    $sql = "SELECT received_amount, total_amount FROM bill_details WHERE invoice_no = ?";
-    $stmt = sqlsrv_query($conn, $sql, [$invoice_no]);
-
-    if ($stmt === false) {
-        errorResponse("Fetch failed", sqlsrv_errors());
-    }
-
-    $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
-
-    $current_paid = $row['received_amount'] ?? 0;
-    $total_amount = $row['total_amount'] ?? 0;
-
-    $new_paid = $current_paid + $amount;
-
-  if ($new_paid > $total_amount) {
-    errorResponse("Payment exceeds total amount", [
-        "total_amount" => $total_amount,
-        "already_paid" => $current_paid,
-        "remaining" => $total_amount - $current_paid
-    ]);
+// =====================================================
+else {
+    response(false, "Invalid request type");
 }
 
-    $balance = $total_amount - $new_paid;
-
-    // UPDATE BILL
-    $update = "
-        UPDATE bill_details 
-        SET received_amount = ?, balance_amount = ?
-        WHERE invoice_no = ?
-    ";
-
-    $res = sqlsrv_query($conn, $update, [$new_paid, $balance, $invoice_no]);
-
-    if ($res === false) {
-        errorResponse("Update failed", sqlsrv_errors());
-    }
-
-    // INSERT PAYMENT HISTORY
-    $insert = "
-        INSERT INTO payment_history
-        (bill_no, paid_amount, type, created_on)
-        VALUES (?, ?, ?, GETDATE())
-    ";
-
-    $his = sqlsrv_query($conn, $insert, [
-        $invoice_no,
-        $amount,
-        'Cash'
-    ]);
-
-    if ($his === false) {
-        errorResponse("History insert failed", sqlsrv_errors());
-    }
-
-    echo json_encode([
-        "status" => true,
-        "message" => "Payment updated",
-        "paid_total" => $new_paid,
-        "balance" => $balance
-    ]);
-    exit;
+} catch (Exception $e) {
+    response(false, "Server Error", $e->getMessage());
 }
-
-// ===================== DEFAULT =====================
-errorResponse("Invalid request type");
 ?>
