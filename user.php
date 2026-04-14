@@ -1,4 +1,3 @@
-
 <?php
 header("Content-Type: application/json");
 
@@ -20,7 +19,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 switch ($method) {
 
-    // ================= MASTER DATA =================
+    // ================= MASTER =================
     case 'GET':
 
         if (isset($_GET['type']) && $_GET['type'] == 'master') {
@@ -56,21 +55,21 @@ switch ($method) {
         $sql = "SELECT * FROM users ORDER BY id DESC";
         $stmt = sqlsrv_query($conn, $sql);
 
-        if (!$stmt) {
-            echo json_encode([
-                "status" => false,
-                "error" => sqlsrv_errors()
-            ]);
-            exit;
-        }
-
         $data = [];
 
         while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
 
-            $row['modules'] = !empty($row['modules']) ? explode(",", $row['modules']) : [];
-            $row['access_branch'] = !empty($row['access_branch']) ? explode(",", $row['access_branch']) : [];
-            $row['reporting_users'] = !empty($row['reporting_users']) ? explode(",", $row['reporting_users']) : [];
+            $row['modules'] = !empty($row['modules']) 
+                ? array_map('trim', explode(",", $row['modules'])) 
+                : [];
+
+            $row['access_branch'] = !empty($row['access_branch']) 
+                ? array_map('trim', explode(",", $row['access_branch'])) 
+                : [];
+
+            $row['reporting_users'] = !empty($row['reporting_users']) 
+                ? array_map('trim', explode(",", $row['reporting_users'])) 
+                : [];
 
             $data[] = $row;
         }
@@ -81,36 +80,26 @@ switch ($method) {
         ]);
         break;
 
-
     // ================= CREATE =================
     case 'POST':
 
         $data = json_decode(file_get_contents("php://input"), true);
 
-        $fullname = $data['fullname'] ?? '';
-        $email    = $data['email'] ?? '';
-        $phone    = $data['phone'] ?? '';
-        $city     = $data['city'] ?? '';
-        $role     = $data['role'] ?? '';
-
-        // 🔥 MD5 PASSWORD
-        $password = md5($data['password'] ?? '');
-
-        $modules  = implode(",", $data['modules'] ?? []);
-        $branches = implode(",", $data['branches'] ?? []);
-        $users    = implode(",", $data['reporting_users'] ?? []);
+        $modules  = implode(",", array_map('trim', $data['modules'] ?? []));
+        $branches = implode(",", array_map('trim', $data['branches'] ?? []));
+        $users    = implode(",", array_map('trim', $data['reporting_users'] ?? []));
 
         $sql = "INSERT INTO users 
         (fullname, email, phone, city, role, password, modules, access_branch, reporting_users)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         $params = [
-            $fullname,
-            $email,
-            $phone,
-            $city,
-            $role,
-            $password,
+            $data['fullname'],
+            $data['email'],
+            $data['phone'],
+            $data['city'],
+            $data['role'],
+            md5($data['password']),
             $modules,
             $branches,
             $users
@@ -118,100 +107,72 @@ switch ($method) {
 
         $stmt = sqlsrv_query($conn, $sql, $params);
 
-        if (!$stmt) {
-            echo json_encode([
-                "status" => false,
-                "error" => sqlsrv_errors()
-            ]);
-        } else {
-            echo json_encode([
-                "status" => true,
-                "message" => "User created"
-            ]);
-        }
+        echo json_encode([
+            "status" => $stmt ? true : false,
+            "message" => $stmt ? "User created" : sqlsrv_errors()
+        ]);
         break;
-
 
     // ================= UPDATE =================
     case 'PUT':
 
         $data = json_decode(file_get_contents("php://input"), true);
 
-        $id = $data['id'] ?? 0;
+        $modules  = implode(",", array_map('trim', $data['modules'] ?? []));
+        $branches = implode(",", array_map('trim', $data['branches'] ?? []));
+        $users    = implode(",", array_map('trim', $data['reporting_users'] ?? []));
 
-        $fullname = $data['fullname'] ?? '';
-        $email    = $data['email'] ?? '';
-        $phone    = $data['phone'] ?? '';
-        $city     = $data['city'] ?? '';
-        $role     = $data['role'] ?? '';
-
-        // optional password update
         $password = !empty($data['password']) ? md5($data['password']) : null;
-
-        $modules  = implode(",", $data['modules'] ?? []);
-        $branches = implode(",", $data['branches'] ?? []);
-        $users    = implode(",", $data['reporting_users'] ?? []);
 
         if ($password) {
             $sql = "UPDATE users SET 
             fullname=?, email=?, phone=?, city=?, role=?, 
             password=?, modules=?, access_branch=?, reporting_users=? 
             WHERE id=?";
-
             $params = [
-                $fullname,
-                $email,
-                $phone,
-                $city,
-                $role,
+                $data['fullname'],
+                $data['email'],
+                $data['phone'],
+                $data['city'],
+                $data['role'],
                 $password,
                 $modules,
                 $branches,
                 $users,
-                $id
+                $data['id']
             ];
         } else {
             $sql = "UPDATE users SET 
             fullname=?, email=?, phone=?, city=?, role=?, 
             modules=?, access_branch=?, reporting_users=? 
             WHERE id=?";
-
             $params = [
-                $fullname,
-                $email,
-                $phone,
-                $city,
-                $role,
+                $data['fullname'],
+                $data['email'],
+                $data['phone'],
+                $data['city'],
+                $data['role'],
                 $modules,
                 $branches,
                 $users,
-                $id
+                $data['id']
             ];
         }
 
         $stmt = sqlsrv_query($conn, $sql, $params);
 
-        if (!$stmt) {
-            echo json_encode([
-                "status" => false,
-                "error" => sqlsrv_errors()
-            ]);
-        } else {
-            echo json_encode([
-                "status" => true,
-                "message" => "User updated"
-            ]);
-        }
+        echo json_encode([
+            "status" => $stmt ? true : false,
+            "message" => $stmt ? "User updated" : sqlsrv_errors()
+        ]);
         break;
-
 
     // ================= DELETE =================
     case 'DELETE':
 
         $id = $_GET['id'] ?? 0;
 
-        $sql = "DELETE FROM users WHERE id=?";
-        $stmt = sqlsrv_query($conn, $sql, [$id]);
+        $stmt = sqlsrv_query($conn, "DELETE FROM users WHERE id=?", [$id]);
 
         echo json_encode([
             "status" => $stmt ? true : false,
