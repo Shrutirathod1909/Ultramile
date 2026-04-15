@@ -71,7 +71,7 @@ function getCategoryChart($conn)
     ]);
 }
 
-# ================= BRANCH WISE CATEGORY =================
+# ================= BRANCH WISE CATEGORY (FIXED) =================
 function getCategoryChartBranch($conn)
 {
     $sql = "
@@ -93,6 +93,7 @@ function getCategoryChartBranch($conn)
             ON LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(b.branch_name)))
         LEFT JOIN product_detail_description p 
             ON p.id = i.product_id
+
         GROUP BY b.id, b.branch_name
         ORDER BY b.branch_name ASC
     ";
@@ -103,7 +104,19 @@ function getCategoryChartBranch($conn)
     $data = [];
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-        $data[] = $row;
+
+        // 🔥 REMOVE ZERO DATA BRANCHES
+        $total =
+            ($row['TBR_stock'] ?? 0) +
+            ($row['TBR_ordered'] ?? 0) +
+            ($row['LTR_stock'] ?? 0) +
+            ($row['LTR_ordered'] ?? 0) +
+            ($row['PCR_stock'] ?? 0) +
+            ($row['PCR_ordered'] ?? 0);
+
+        if ($total > 0) {
+            $data[] = $row;
+        }
     }
 
     echo json_encode([
