@@ -114,9 +114,12 @@ switch ($method) {
         break;
 
     // ================= UPDATE =================
-    case 'PUT':
+   case 'POST':
 
-        $data = json_decode(file_get_contents("php://input"), true);
+    $data = json_decode(file_get_contents("php://input"), true);
+
+    // 🔥 UPDATE CHECK
+    if (isset($_GET['type']) && $_GET['type'] == 'update') {
 
         $modules  = implode(",", array_map('trim', $data['modules'] ?? []));
         $branches = implode(",", array_map('trim', $data['branches'] ?? []));
@@ -165,9 +168,8 @@ switch ($method) {
             "status" => $stmt ? true : false,
             "message" => $stmt ? "User updated" : sqlsrv_errors()
         ]);
-        break;
-
-    // ================= DELETE =================
+        exit;
+    } // ================= DELETE =================
     case 'DELETE':
 
         $id = $_GET['id'] ?? 0;
