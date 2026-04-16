@@ -61,7 +61,7 @@ function get_party_details($conn, $party, $from, $to)
                 invoice_no AS order_no,
                 address
             FROM orders
-            WHERE LTRIM(RTRIM(customer_name)) = LTRIM(RTRIM(?))
+            WHERE LTRIM(RTRIM(customer_name)) LIKE '%' + LTRIM(RTRIM(?)) + '%'
             AND fulfilled = 1
             AND CONVERT(date, created_on) BETWEEN ? AND ?
             ORDER BY created_on DESC";

@@ -37,12 +37,13 @@ function generateBarcode($conn) {
     return $barcode;
 }
 
-// ================= COMMON INSERT =================
+// ================= INSERT =================
 function insertInventory($conn, $data) {
 
     $sql = "INSERT INTO inventory (
         product_name,
         sku_code,
+        category,
         purchase_price,
         barcode,
         status,
@@ -52,8 +53,9 @@ function insertInventory($conn, $data) {
         invoice_date,
         container_no,
         bl_no,
-        received_date
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        received_date,
+        created_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     $stmt = sqlsrv_query($conn, $sql, $data);
 
@@ -69,13 +71,12 @@ $type = $_GET['type'] ?? "";
 =================================================
 1️⃣ INSERT API
 =================================================
-POST: type=insert
 */
 if ($type == "insert" && isset($_POST['save'])) {
 
     $name   = trim($_POST['product_name'] ?? '');
     $sku    = trim($_POST['sku_code'] ?? '');
-    $price  = $_POST['price'] ?? 0;
+    $price  = (float)($_POST['price'] ?? 0);
     $qty    = (int)($_POST['qty'] ?? 0);
 
     $invoice_no    = $_POST['invoice_no'] ?? '';
@@ -84,25 +85,44 @@ if ($type == "insert" && isset($_POST['save'])) {
     $bl_no         = $_POST['bl_no'] ?? '';
     $received_date = date('Y-m-d');
 
+    $created_by = (int)($_POST['created_by'] ?? 0);
+
     if ($name == '' || $qty <= 0) {
         response(false, "Invalid input");
     }
 
-    // ================= INVOICE DUPLICATE CHECK =================
-    $checkSql = "SELECT COUNT(*) as cnt FROM inventory WHERE invoice_no = ?";
-    $checkStmt = sqlsrv_query($conn, $checkSql, [$invoice_no]);
+    // ================= CATEGORY FETCH =================
+    $catSql = "SELECT TOP 1 category 
+               FROM dbo.product_detail_description 
+               WHERE product_name = ?";
 
-    if ($checkStmt === false) {
-        response(false, "Invoice check failed", sqlsrv_errors());
+    $catStmt = sqlsrv_query($conn, $catSql, [$name]);
+
+    if ($catStmt === false) {
+        response(false, "Category fetch failed", sqlsrv_errors());
     }
 
-    $checkRow = sqlsrv_fetch_array($checkStmt, SQLSRV_FETCH_ASSOC);
+    $catRow = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC);
+    $category = $catRow['category'] ?? '';
 
-    if (($checkRow['cnt'] ?? 0) > 0) {
-        response(false, "Invoice number already exists");
+    // ================= INVOICE CHECK =================
+    if ($invoice_no != '') {
+
+        $checkSql = "SELECT COUNT(*) as cnt FROM inventory WHERE invoice_no = ?";
+        $checkStmt = sqlsrv_query($conn, $checkSql, [$invoice_no]);
+
+        if ($checkStmt === false) {
+            response(false, "Invoice check failed", sqlsrv_errors());
+        }
+
+        $checkRow = sqlsrv_fetch_array($checkStmt, SQLSRV_FETCH_ASSOC);
+
+        if (($checkRow['cnt'] ?? 0) > 0) {
+            response(false, "Invoice number already exists");
+        }
     }
 
-    // ================= INSERT START =================
+    // ================= TRANSACTION =================
     sqlsrv_begin_transaction($conn);
 
     try {
@@ -114,6 +134,7 @@ if ($type == "insert" && isset($_POST['save'])) {
             insertInventory($conn, [
                 $name,
                 $sku,
+                $category,
                 $price,
                 $barcode,
                 'received',
@@ -123,7 +144,8 @@ if ($type == "insert" && isset($_POST['save'])) {
                 $invoice_date,
                 $container_no,
                 $bl_no,
-                $received_date
+                $received_date,
+                $created_by
             ]);
         }
 
@@ -141,7 +163,6 @@ if ($type == "insert" && isset($_POST['save'])) {
 =================================================
 2️⃣ LIST API
 =================================================
-GET: type=list
 */
 if ($type == "list") {
 
@@ -149,11 +170,10 @@ if ($type == "list") {
                 inventory_id,
                 product_name,
                 sku_code,
+                category,
                 purchase_price,
                 barcode,
-                status,
-                active,
-                readable,
+                created_by,
                 invoice_no,
                 invoice_date,
                 container_no,
@@ -179,8 +199,32 @@ if ($type == "list") {
 
 /*
 =================================================
-DEFAULT
+3️⃣ PRODUCT LIST
 =================================================
 */
+if ($type == "product_list") {
+
+    $sql = "SELECT DISTINCT product_name 
+            FROM dbo.product_detail_description 
+            WHERE product_name IS NOT NULL 
+            AND product_name != ''
+            ORDER BY product_name ASC";
+
+    $stmt = sqlsrv_query($conn, $sql);
+
+    if ($stmt === false) {
+        response(false, "Product fetch failed", sqlsrv_errors());
+    }
+
+    $products = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $products[] = $row['product_name'];
+    }
+
+    response(true, "Product list fetched", $products);
+}
+
+// ================= DEFAULT =================
 response(false, "Invalid API type");
 ?>
