@@ -13,6 +13,10 @@ switch ($action) {
         getCategoryChart($conn);
         break;
 
+    case "getOrderCustomers":
+        getOrderCustomers($conn);
+        break;
+
     case "getCategoryChartBranch":
         getCategoryChartBranch($conn);
         break;
@@ -37,23 +41,40 @@ switch ($action) {
         break;
 }
 
-# ================= TOTAL CATEGORY =================
-function getCategoryChart($conn)
-{
+# ================= ERROR =================
+function returnError() {
+    echo json_encode([
+        "status" => false,
+        "error" => sqlsrv_errors()
+    ]);
+    exit;
+}
+
+# ================= CATEGORY CHART =================
+function getCategoryChart($conn) {
+
     $sql = "
-        SELECT 
-            COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
+    SELECT 
+        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
 
-            COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
+        STRING_AGG(CASE WHEN UPPER(p.category)='TBR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS TBR_skus,
 
-            COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered
+        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
 
-        FROM inventory i
-        INNER JOIN product_detail_description p 
-            ON p.id = i.product_id
+        STRING_AGG(CASE WHEN UPPER(p.category)='LTR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS LTR_skus,
+
+        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered,
+
+        STRING_AGG(CASE WHEN UPPER(p.category)='PCR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS PCR_skus
+
+    FROM inventory i
+    JOIN product_detail_description p ON p.id = i.product_id
     ";
 
     $stmt = sqlsrv_query($conn, $sql);
@@ -63,39 +84,54 @@ function getCategoryChart($conn)
 
     echo json_encode([
         "status" => true,
-        "data" => $row ?: [
-            "TBR_stock"=>0,"TBR_ordered"=>0,
-            "LTR_stock"=>0,"LTR_ordered"=>0,
-            "PCR_stock"=>0,"PCR_ordered"=>0
-        ]
+        "data" => $row
     ]);
 }
 
-# ================= BRANCH WISE CATEGORY (FIXED) =================
-function getCategoryChartBranch($conn)
-{
+# ================= BRANCH WISE CATEGORY =================
+function getCategoryChartBranch($conn) {
+
+    $from = $_GET['from_date'] ?? null;
+    $to   = $_GET['to_date'] ?? null;
+
     $sql = "
-        SELECT 
-            b.id AS branch_id,
-            b.branch_name,
+    SELECT 
+        b.branch_name,
 
-            COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
+        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
 
-            COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
+        STRING_AGG(CASE WHEN UPPER(p.category)='TBR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS TBR_skus,
 
-            COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
-            COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered
+        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
 
-        FROM branch b
-        LEFT JOIN inventory i 
-            ON LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(b.branch_name)))
-        LEFT JOIN product_detail_description p 
-            ON p.id = i.product_id
+        STRING_AGG(CASE WHEN UPPER(p.category)='LTR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS LTR_skus,
 
-        GROUP BY b.id, b.branch_name
-        ORDER BY b.branch_name ASC
+        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
+        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered,
+
+        STRING_AGG(CASE WHEN UPPER(p.category)='PCR' 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS PCR_skus
+
+    FROM branch b
+    LEFT JOIN inventory i 
+        ON LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(b.branch_name)))
+    LEFT JOIN product_detail_description p 
+        ON p.id = i.product_id
+
+    WHERE 1=1
+    ";
+
+    if ($from && $to) {
+        $sql .= " AND CONVERT(date, i.created_on) BETWEEN '$from' AND '$to' ";
+    }
+
+    $sql .= "
+    GROUP BY b.branch_name
+    ORDER BY b.branch_name
     ";
 
     $stmt = sqlsrv_query($conn, $sql);
@@ -105,7 +141,6 @@ function getCategoryChartBranch($conn)
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
 
-        // 🔥 REMOVE ZERO DATA BRANCHES
         $total =
             ($row['TBR_stock'] ?? 0) +
             ($row['TBR_ordered'] ?? 0) +
@@ -127,8 +162,8 @@ function getCategoryChartBranch($conn)
 }
 
 # ================= SINGLE BRANCH =================
-function getCategoryByBranch($conn)
-{
+function getCategoryByBranch($conn) {
+
     $branch_name = trim($_GET['branch_name'] ?? '');
 
     if ($branch_name == '') {
@@ -151,8 +186,7 @@ function getCategoryByBranch($conn)
             COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered
 
         FROM inventory i
-        INNER JOIN product_detail_description p 
-            ON p.id = i.product_id
+        INNER JOIN product_detail_description p ON p.id = i.product_id
         WHERE LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(?)))
     ";
 
@@ -163,17 +197,13 @@ function getCategoryByBranch($conn)
 
     echo json_encode([
         "status" => true,
-        "data" => $row ?: [
-            "TBR_stock"=>0,"TBR_ordered"=>0,
-            "LTR_stock"=>0,"LTR_ordered"=>0,
-            "PCR_stock"=>0,"PCR_ordered"=>0
-        ]
+        "data" => $row
     ]);
 }
 
 # ================= PRODUCT WISE =================
-function getProductsByBranchCategory($conn)
-{
+function getProductsByBranchCategory($conn) {
+
     $branch = trim($_GET['branch'] ?? '');
     $category = trim($_GET['category'] ?? '');
 
@@ -195,7 +225,6 @@ function getProductsByBranchCategory($conn)
             LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(?)))
             AND UPPER(i.category) = UPPER(?)
         GROUP BY i.product_name
-        ORDER BY i.product_name ASC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, [$branch, $category]);
@@ -209,14 +238,13 @@ function getProductsByBranchCategory($conn)
 
     echo json_encode([
         "status" => true,
-        "count" => count($data),
         "data" => $data
     ]);
 }
 
 # ================= SIZE WISE =================
-function getSizeWiseData($conn)
-{
+function getSizeWiseData($conn) {
+
     $branch = trim($_GET['branch'] ?? '');
     $category = trim($_GET['category'] ?? '');
 
@@ -233,13 +261,11 @@ function getSizeWiseData($conn)
             p.type AS size,
             COUNT(*) AS total
         FROM inventory i
-        INNER JOIN product_detail_description p 
-            ON p.id = i.product_id
+        INNER JOIN product_detail_description p ON p.id = i.product_id
         WHERE 
             LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(?)))
             AND UPPER(p.category) = UPPER(?)
         GROUP BY p.type
-        ORDER BY p.type ASC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, [$branch, $category]);
@@ -257,13 +283,55 @@ function getSizeWiseData($conn)
     ]);
 }
 
-# ================= ERROR =================
-function returnError()
-{
+# ================= ORDER CUSTOMER LIST =================
+function getOrderCustomers($conn) {
+
+    $from = $_GET['from'] ?? null;
+    $to = $_GET['to'] ?? null;
+    $search = $_GET['search'] ?? '';
+    $branch = $_GET['branch'] ?? '';
+
+    $sql = "
+        SELECT 
+            customer_name,
+            contact_no,
+            to_branch,
+            MAX(order_date) AS order_date,
+            SUM(quantity) AS total_qty,
+            SUM(total_price) AS total_amount
+        FROM orders
+        WHERE 1=1
+    ";
+
+    if ($from && $to) {
+        $sql .= " AND CAST(order_date AS DATE) BETWEEN '$from' AND '$to' ";
+    }
+
+    if ($search != '') {
+        $sql .= " AND customer_name LIKE '%$search%' ";
+    }
+
+    if ($branch != '') {
+        $sql .= " AND LTRIM(RTRIM(UPPER(to_branch))) = LTRIM(RTRIM(UPPER('$branch'))) ";
+    }
+
+    $sql .= "
+        GROUP BY customer_name, contact_no, to_branch
+        ORDER BY MAX(order_date) DESC
+    ";
+
+    $stmt = sqlsrv_query($conn, $sql);
+    if ($stmt === false) returnError();
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = $row;
+    }
+
     echo json_encode([
-        "status" => false,
-        "error" => sqlsrv_errors()
+        "status" => true,
+        "data" => $data
     ]);
-    exit;
 }
 ?>
