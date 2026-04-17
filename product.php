@@ -142,6 +142,31 @@ elseif ($action == "delete") {
 }
 
 /* =====================================================
+   5. PRODUCT TYPE COUNT (LTR / PCR / TBR)
+===================================================== */
+elseif ($action == "type_count") {
+
+    $sql = "SELECT category, COUNT(*) AS total
+            FROM product_detail_description
+            GROUP BY category";
+
+    $stmt = sqlsrv_query($conn, $sql);
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = [
+            "type" => $row['category'] ?? "",
+            "total" => $row['total'] ?? 0
+        ];
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
+/* =====================================================
    DEFAULT
 ===================================================== */
 else {

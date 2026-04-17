@@ -28,7 +28,9 @@ switch ($action) {
     case "getProductsByBranchCategory":
         getProductsByBranchCategory($conn);
         break;
-
+  case "getBranchCategoryDetails":
+    getBranchCategoryDetails($conn);
+    break;
     case "getSizeWiseData":
         getSizeWiseData($conn);
         break;
@@ -50,28 +52,43 @@ function returnError() {
     exit;
 }
 
-# ================= CATEGORY CHART =================
+# ================= HELPER (ZERO CHECK) =================
+function isAllZero($row, $keys) {
+    foreach ($keys as $k) {
+        if (!empty($row[$k]) && $row[$k] != 0) return false;
+    }
+    return true;
+}
+
+# ================= CATEGORY CHART (SKU FIXED) =================
 function getCategoryChart($conn) {
 
     $sql = "
     SELECT 
+
         COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
         COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='TBR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS TBR_skus,
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='TBR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS TBR_skus,
 
         COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
         COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='LTR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS LTR_skus,
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='LTR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS LTR_skus,
 
         COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
         COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='PCR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS PCR_skus
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='PCR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS PCR_skus
 
     FROM inventory i
     JOIN product_detail_description p ON p.id = i.product_id
@@ -82,13 +99,26 @@ function getCategoryChart($conn) {
 
     $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
 
+    $row['TBR_skus'] = $row['TBR_skus'] ?? '';
+    $row['LTR_skus'] = $row['LTR_skus'] ?? '';
+    $row['PCR_skus'] = $row['PCR_skus'] ?? '';
+
+    if (isAllZero($row, [
+        'TBR_stock','TBR_ordered',
+        'LTR_stock','LTR_ordered',
+        'PCR_stock','PCR_ordered'
+    ])) {
+        echo json_encode(["status" => true, "data" => []]);
+        return;
+    }
+
     echo json_encode([
         "status" => true,
         "data" => $row
     ]);
 }
 
-# ================= BRANCH WISE CATEGORY =================
+# ================= BRANCH CHART =================
 function getCategoryChartBranch($conn) {
 
     $from = $_GET['from_date'] ?? null;
@@ -101,27 +131,32 @@ function getCategoryChartBranch($conn) {
         COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
         COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='TBR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS TBR_skus,
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='TBR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS TBR_skus,
 
         COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
         COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='LTR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS LTR_skus,
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='LTR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS LTR_skus,
 
         COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
         COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered,
 
-        STRING_AGG(CASE WHEN UPPER(p.category)='PCR' 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', ') AS PCR_skus
+        STRING_AGG(
+            CASE WHEN UPPER(p.category)='PCR' AND i.sku_code IS NOT NULL 
+            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        ) AS PCR_skus
 
     FROM branch b
     LEFT JOIN inventory i 
         ON LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(b.branch_name)))
     LEFT JOIN product_detail_description p 
         ON p.id = i.product_id
-
     WHERE 1=1
     ";
 
@@ -129,10 +164,7 @@ function getCategoryChartBranch($conn) {
         $sql .= " AND CONVERT(date, i.created_on) BETWEEN '$from' AND '$to' ";
     }
 
-    $sql .= "
-    GROUP BY b.branch_name
-    ORDER BY b.branch_name
-    ";
+    $sql .= " GROUP BY b.branch_name ORDER BY b.branch_name";
 
     $stmt = sqlsrv_query($conn, $sql);
     if ($stmt === false) returnError();
@@ -141,22 +173,17 @@ function getCategoryChartBranch($conn) {
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
 
-        $total =
-            ($row['TBR_stock'] ?? 0) +
-            ($row['TBR_ordered'] ?? 0) +
-            ($row['LTR_stock'] ?? 0) +
-            ($row['LTR_ordered'] ?? 0) +
-            ($row['PCR_stock'] ?? 0) +
-            ($row['PCR_ordered'] ?? 0);
+        if (isAllZero($row, [
+            'TBR_stock','TBR_ordered',
+            'LTR_stock','LTR_ordered',
+            'PCR_stock','PCR_ordered'
+        ])) continue;
 
-        if ($total > 0) {
-            $data[] = $row;
-        }
+        $data[] = $row;
     }
 
     echo json_encode([
         "status" => true,
-        "count" => count($data),
         "data" => $data
     ]);
 }
@@ -167,10 +194,7 @@ function getCategoryByBranch($conn) {
     $branch_name = trim($_GET['branch_name'] ?? '');
 
     if ($branch_name == '') {
-        echo json_encode([
-            "status" => false,
-            "message" => "branch_name is required"
-        ]);
+        echo json_encode(["status" => false, "message" => "branch_name required"]);
         return;
     }
 
@@ -242,6 +266,49 @@ function getProductsByBranchCategory($conn) {
     ]);
 }
 
+
+function getBranchCategoryDetails($conn) {
+
+    $branch = trim($_GET['branch'] ?? '');
+    $category = trim($_GET['category'] ?? '');
+
+    if ($branch == '' || $category == '') {
+        echo json_encode([
+            "status" => false,
+            "message" => "branch and category required"
+        ]);
+        return;
+    }
+
+    $sql = "
+        SELECT 
+            i.product_name,
+            i.sku_code,
+            i.ordered,
+            p.category,
+            p.type
+        FROM inventory i
+        INNER JOIN product_detail_description p ON p.id = i.product_id
+        WHERE 
+            LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(?)))
+            AND UPPER(p.category) = UPPER(?)
+    ";
+
+    $stmt = sqlsrv_query($conn, $sql, [$branch, $category]);
+
+    if ($stmt === false) returnError();
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = $row;
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
 # ================= SIZE WISE =================
 function getSizeWiseData($conn) {
 

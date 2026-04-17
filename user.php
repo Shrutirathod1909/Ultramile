@@ -6,7 +6,8 @@ ini_set('display_errors', 1);
 
 include "db.php";
 
-if (!$conn) {
+// ================= DB CHECK =================
+if ($conn === false) {
     echo json_encode([
         "status" => false,
         "message" => "DB connection failed",
@@ -19,57 +20,136 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 switch ($method) {
 
-    // ================= MASTER =================
+    // ================= GET =================
     case 'GET':
 
-        if (isset($_GET['type']) && $_GET['type'] == 'master') {
+        // ===== MASTER LIST (DROPDOWN) =====
+      if (isset($_GET['type']) && $_GET['type'] == 'master') {
 
-            $modules = [];
-            $q1 = sqlsrv_query($conn, "SELECT * FROM modules");
-            while ($r = sqlsrv_fetch_array($q1, SQLSRV_FETCH_ASSOC)) {
-                $modules[] = $r;
-            }
+    $modules = [];
+    $branches = [];
+    $users = [];
 
-            $branches = [];
-            $q2 = sqlsrv_query($conn, "SELECT * FROM branch");
-            while ($r = sqlsrv_fetch_array($q2, SQLSRV_FETCH_ASSOC)) {
-                $branches[] = $r;
-            }
+    // ===== MODULES =====
+    $q1 = sqlsrv_query($conn, "SELECT module_id, module_name FROM modules");
+    if ($q1) {
+        while ($r = sqlsrv_fetch_array($q1, SQLSRV_FETCH_ASSOC)) {
+            $modules[] = $r;
+        }
+    }
 
-            $users = [];
-            $q3 = sqlsrv_query($conn, "SELECT id, fullname FROM users");
-            while ($r = sqlsrv_fetch_array($q3, SQLSRV_FETCH_ASSOC)) {
-                $users[] = $r;
-            }
+    // ===== BRANCHES =====
+    $q2 = sqlsrv_query($conn, "SELECT id, branch_name FROM branch");
+    if ($q2) {
+        while ($r = sqlsrv_fetch_array($q2, SQLSRV_FETCH_ASSOC)) {
+            $branches[] = $r;
+        }
+    }
 
+    // ===== USERS =====
+    $q3 = sqlsrv_query($conn, "SELECT id, fullname FROM users ORDER BY fullname ASC");
+    if ($q3) {
+        while ($r = sqlsrv_fetch_array($q3, SQLSRV_FETCH_ASSOC)) {
+            $users[] = $r;
+        }
+    }
+
+    echo json_encode([
+        "status" => true,
+        "modules" => $modules,
+        "branches" => $branches,
+        "users" => $users
+    ]);
+
+    exit;
+}
+
+        // ===== FULL USER LIST =====
+        $sql = "SELECT * FROM users ORDER BY id DESC";
+        $stmt = sqlsrv_query($conn, $sql);
+
+        if (!$stmt) {
             echo json_encode([
-                "status" => true,
-                "modules" => $modules,
-                "branches" => $branches,
-                "users" => $users
+                "status" => false,
+                "error" => sqlsrv_errors()
             ]);
             exit;
         }
-
-        // ================= USERS LIST =================
-        $sql = "SELECT * FROM users ORDER BY id DESC";
-        $stmt = sqlsrv_query($conn, $sql);
 
         $data = [];
 
         while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
 
-            $row['modules'] = !empty($row['modules']) 
-                ? array_map('trim', explode(",", $row['modules'])) 
-                : [];
+            // ================= MODULES =================
+            $moduleData = [];
+            $raw = $row['modules'] ?? '';
 
-            $row['access_branch'] = !empty($row['access_branch']) 
-                ? array_map('trim', explode(",", $row['access_branch'])) 
-                : [];
+            if (!empty($raw)) {
+                $items = array_unique(array_map('trim', explode(",", $raw)));
 
-            $row['reporting_users'] = !empty($row['reporting_users']) 
-                ? array_map('trim', explode(",", $row['reporting_users'])) 
-                : [];
+                foreach ($items as $item) {
+                    if (is_numeric($item)) {
+                        $q = sqlsrv_query($conn,
+                            "SELECT module_name FROM modules WHERE module_id = ?",
+                            [$item]
+                        );
+                        if ($q && $r = sqlsrv_fetch_array($q, SQLSRV_FETCH_ASSOC)) {
+                            $moduleData[] = $r['module_name'];
+                        }
+                    } else {
+                        $moduleData[] = $item;
+                    }
+                }
+            }
+
+            // ================= BRANCH =================
+            $branchData = [];
+            $raw = $row['access_branch'] ?? '';
+
+            if (!empty($raw)) {
+                $items = array_unique(array_map('trim', explode(",", $raw)));
+
+                foreach ($items as $item) {
+                    if (is_numeric($item)) {
+                        $q = sqlsrv_query($conn,
+                            "SELECT branch_name FROM branch WHERE id = ?",
+                            [$item]
+                        );
+                        if ($q && $r = sqlsrv_fetch_array($q, SQLSRV_FETCH_ASSOC)) {
+                            $branchData[] = $r['branch_name'];
+                        }
+                    } else {
+                        $branchData[] = $item;
+                    }
+                }
+            }
+
+            // ================= REPORTING USERS =================
+            $reportingNames = [];
+            $rawUsers = $row['reporting_users'] ?? '';
+
+            if (!empty($rawUsers)) {
+                $ids = array_unique(array_filter(array_map('trim', explode(",", $rawUsers))));
+
+                foreach ($ids as $id) {
+                    $id = (int)$id;
+
+                    if ($id > 0) {
+                        $q = sqlsrv_query($conn,
+                            "SELECT fullname FROM users WHERE id = ?",
+                            [$id]
+                        );
+                        if ($q && $r = sqlsrv_fetch_array($q, SQLSRV_FETCH_ASSOC)) {
+                            $reportingNames[] = $r['fullname'];
+                        }
+                    }
+                }
+            }
+
+            // ================= FINAL OUTPUT =================
+            $row['modules'] = $moduleData;
+            $row['access_branch'] = $branchData;
+            $row['reporting_users'] = $reportingNames;
 
             $data[] = $row;
         }
@@ -78,6 +158,7 @@ switch ($method) {
             "status" => true,
             "data" => $data
         ]);
+
         break;
 
     // ================= CREATE =================
@@ -85,9 +166,17 @@ switch ($method) {
 
         $data = json_decode(file_get_contents("php://input"), true);
 
-        $modules  = implode(",", array_map('trim', $data['modules'] ?? []));
-        $branches = implode(",", array_map('trim', $data['branches'] ?? []));
-        $users    = implode(",", array_map('trim', $data['reporting_users'] ?? []));
+        if (!$data) {
+            echo json_encode([
+                "status" => false,
+                "message" => "Invalid JSON"
+            ]);
+            exit;
+        }
+
+        $modules  = implode(",", array_unique($data['modules'] ?? []));
+        $branches = implode(",", array_unique($data['branches'] ?? []));
+        $users    = implode(",", array_unique($data['reporting_users'] ?? []));
 
         $sql = "INSERT INTO users 
         (fullname, email, phone, city, role, password, modules, access_branch, reporting_users)
@@ -107,31 +196,42 @@ switch ($method) {
 
         $stmt = sqlsrv_query($conn, $sql, $params);
 
+        if (!$stmt) {
+            echo json_encode([
+                "status" => false,
+                "error" => sqlsrv_errors()
+            ]);
+            exit;
+        }
+
         echo json_encode([
-            "status" => $stmt ? true : false,
-            "message" => $stmt ? "User created" : sqlsrv_errors()
+            "status" => true,
+            "message" => "User created"
         ]);
+
         break;
 
     // ================= UPDATE =================
-   case 'POST':
+    case 'PUT':
 
-    $data = json_decode(file_get_contents("php://input"), true);
+        $data = json_decode(file_get_contents("php://input"), true);
 
-    // 🔥 UPDATE CHECK
-    if (isset($_GET['type']) && $_GET['type'] == 'update') {
+        if (!$data) {
+            echo json_encode([
+                "status" => false,
+                "message" => "Invalid JSON"
+            ]);
+            exit;
+        }
 
-        $modules  = implode(",", array_map('trim', $data['modules'] ?? []));
-        $branches = implode(",", array_map('trim', $data['branches'] ?? []));
-        $users    = implode(",", array_map('trim', $data['reporting_users'] ?? []));
+        $modules  = implode(",", array_unique($data['modules'] ?? []));
+        $branches = implode(",", array_unique($data['branches'] ?? []));
+        $users    = implode(",", array_unique($data['reporting_users'] ?? []));
 
         $password = !empty($data['password']) ? md5($data['password']) : null;
 
         if ($password) {
-            $sql = "UPDATE users SET 
-            fullname=?, email=?, phone=?, city=?, role=?, 
-            password=?, modules=?, access_branch=?, reporting_users=? 
-            WHERE id=?";
+            $sql = "UPDATE users SET fullname=?, email=?, phone=?, city=?, role=?, password=?, modules=?, access_branch=?, reporting_users=? WHERE id=?";
             $params = [
                 $data['fullname'],
                 $data['email'],
@@ -145,10 +245,7 @@ switch ($method) {
                 $data['id']
             ];
         } else {
-            $sql = "UPDATE users SET 
-            fullname=?, email=?, phone=?, city=?, role=?, 
-            modules=?, access_branch=?, reporting_users=? 
-            WHERE id=?";
+            $sql = "UPDATE users SET fullname=?, email=?, phone=?, city=?, role=?, modules=?, access_branch=?, reporting_users=? WHERE id=?";
             $params = [
                 $data['fullname'],
                 $data['email'],
@@ -164,22 +261,41 @@ switch ($method) {
 
         $stmt = sqlsrv_query($conn, $sql, $params);
 
+        if (!$stmt) {
+            echo json_encode([
+                "status" => false,
+                "error" => sqlsrv_errors()
+            ]);
+            exit;
+        }
+
         echo json_encode([
-            "status" => $stmt ? true : false,
-            "message" => $stmt ? "User updated" : sqlsrv_errors()
+            "status" => true,
+            "message" => "User updated"
         ]);
-        exit;
-    } // ================= DELETE =================
+
+        break;
+
+    // ================= DELETE =================
     case 'DELETE':
 
         $id = $_GET['id'] ?? 0;
 
-        $stmt = sqlsrv_query($conn, "DELETE FROM users WHERE id=?", [$id]);
+        $stmt = sqlsrv_query($conn, "DELETE FROM users WHERE id = ?", [$id]);
+
+        if (!$stmt) {
+            echo json_encode([
+                "status" => false,
+                "error" => sqlsrv_errors()
+            ]);
+            exit;
+        }
 
         echo json_encode([
-            "status" => $stmt ? true : false,
-            "message" => $stmt ? "User deleted" : sqlsrv_errors()
+            "status" => true,
+            "message" => "User deleted"
         ]);
+
         break;
 }
 ?>
