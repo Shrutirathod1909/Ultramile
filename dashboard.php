@@ -8,11 +8,23 @@ require_once "db.php";
 $action = $_GET['action'] ?? '';
 
 switch ($action) {
+case "getTopSalespersons":
+    getTopSalespersons($conn);
+    break;
 
+case "getTopProducts":
+    getTopProducts($conn);
+    break;
     case "getCategoryChart":
         getCategoryChart($conn);
         break;
+        case "getTopCustomers":
+    getTopCustomers($conn);
+    break;
 
+    case "getProductProfit":
+    getProductProfit($conn);
+    break;
     case "getOrderCustomers":
         getOrderCustomers($conn);
         break;
@@ -59,6 +71,270 @@ function isAllZero($row, $keys) {
     }
     return true;
 }
+
+# ================= PRODUCT PROFITABILITY =================
+function getProductProfit($conn) {
+
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $branch = $_GET['branch'] ?? '';
+
+    $sql = "
+        SELECT TOP 10
+            o.product_name,
+
+            SUM(ISNULL(CAST(o.final_amount AS DECIMAL(18,2)), 0)) AS total_sales,
+
+            SUM(ISNULL(CAST(o.sale_price AS DECIMAL(18,2)), 0) * ISNULL(o.quantity, 0)) AS total_cost,
+
+            (
+                SUM(ISNULL(CAST(o.final_amount AS DECIMAL(18,2)), 0))
+                - SUM(ISNULL(CAST(o.sale_price AS DECIMAL(18,2)), 0) * ISNULL(o.quantity, 0))
+            ) AS profit
+
+        FROM orders o
+        WHERE o.product_name IS NOT NULL
+    ";
+
+    $params = [];
+
+    // 🔹 Date filter
+    if ($from && $to) {
+        $sql .= " AND CAST(o.order_date AS DATE) BETWEEN ? AND ? ";
+        $params[] = $from;
+        $params[] = $to;
+    }
+
+    // 🔹 Branch filter
+    if ($branch != '') {
+        $sql .= " AND LTRIM(RTRIM(UPPER(o.to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
+        $params[] = $branch;
+    }
+
+    $sql .= "
+        GROUP BY o.product_name
+        ORDER BY profit DESC
+    ";
+
+    $stmt = sqlsrv_query($conn, $sql, $params);
+
+    if ($stmt === false) returnError();
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = [
+            "product_name" => $row["product_name"],
+            "total_sales"  => (float)$row["total_sales"],
+            "total_cost"   => (float)$row["total_cost"],
+            "profit"       => (float)$row["profit"]
+        ];
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
+
+
+
+
+
+
+
+
+# ================= Top SalesPersons =================
+
+function getTopSalespersons($conn) {
+
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $branch = $_GET['branch'] ?? '';
+
+    $sql = "
+        SELECT TOP 3
+            o.created_by,
+            u.fullname AS user_name,
+            COUNT(*) AS total_orders,
+            SUM(ISNULL(o.quantity, 0)) AS total_qty,
+            SUM(ISNULL(TRY_CAST(o.final_amount AS DECIMAL(18,2)), 0)) AS total_sales
+        FROM orders o
+        LEFT JOIN users u ON u.id = o.created_by
+        WHERE o.created_by IS NOT NULL
+          AND o.created_by <> 0
+    ";
+
+    $params = [];
+
+    # 🔹 DATE FILTER
+    if ($from && $to) {
+        $sql .= " AND CAST(o.order_date AS DATE) BETWEEN ? AND ? ";
+        $params[] = $from;
+        $params[] = $to;
+    }
+
+    # 🔹 BRANCH FILTER
+    if ($branch != '') {
+        $sql .= " AND LTRIM(RTRIM(UPPER(o.to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
+        $params[] = $branch;
+    }
+
+    # 🔥 GROUP + ORDER
+    $sql .= "
+        GROUP BY o.created_by, u.fullname
+        ORDER BY total_sales DESC
+    ";
+
+    $stmt = sqlsrv_query($conn, $sql, $params);
+
+    if ($stmt === false) returnError();
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = [
+            "user_id" => $row["created_by"],
+            "name" => $row["user_name"],
+            "orders" => (int)$row["total_orders"],
+            "qty" => (int)$row["total_qty"],
+            "sales" => (float)$row["total_sales"]
+        ];
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
+
+# ================= Top PRODUCT =================
+
+function getTopProducts($conn) {
+
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $branch = $_GET['branch'] ?? '';
+
+    $sql = "
+        SELECT TOP 3
+            product_name,
+            SUM(ISNULL(quantity, 0)) AS total_qty,
+            SUM(ISNULL(TRY_CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales
+        FROM orders
+        WHERE final_amount IS NOT NULL
+    ";
+
+    $params = [];
+
+    // 🔥 DATE FILTER
+    if ($from && $to) {
+        $sql .= " AND CAST(order_date AS DATE) BETWEEN ? AND ? ";
+        $params[] = $from;
+        $params[] = $to;
+    }
+
+    // 🔥 BRANCH FILTER
+    if ($branch != '') {
+        $sql .= " AND LTRIM(RTRIM(UPPER(to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
+        $params[] = $branch;
+    }
+
+    $sql .= "
+        GROUP BY product_name
+        HAVING SUM(ISNULL(quantity, 0)) > 0
+        ORDER BY total_qty DESC
+    ";
+
+    $stmt = sqlsrv_query($conn, $sql, $params);
+
+    if ($stmt === false) {
+        returnError();
+    }
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = [
+            "product_name" => $row["product_name"],
+            "total_qty" => (int)$row["total_qty"],
+            "total_sales" => (float)$row["total_sales"]
+        ];
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
+
+
+# ================= Top Customer =================
+
+function getTopCustomers($conn) {
+
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $branch = $_GET['branch'] ?? '';
+
+    $sql = "
+        SELECT TOP 3
+            customer_name,
+            SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales
+        FROM orders
+        WHERE 1=1
+    ";
+
+    // ✅ Date filter
+    if ($from && $to) {
+        $sql .= " AND CAST(order_date AS DATE) BETWEEN ? AND ? ";
+    }
+
+    // ✅ Branch filter
+    if ($branch != '') {
+        $sql .= " AND LTRIM(RTRIM(UPPER(to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
+    }
+
+    $sql .= "
+        GROUP BY customer_name
+        HAVING SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) > 0
+        ORDER BY total_sales DESC
+    ";
+
+    // ✅ Params binding (SAFE)
+    $params = [];
+    if ($from && $to) {
+        $params[] = $from;
+        $params[] = $to;
+    }
+    if ($branch != '') {
+        $params[] = $branch;
+    }
+
+    $stmt = sqlsrv_query($conn, $sql, $params);
+
+    if ($stmt === false) returnError();
+
+    $data = [];
+
+    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+        $data[] = [
+            "customer_name" => $row['customer_name'],
+            "total_sales" => (float)$row['total_sales']
+        ];
+    }
+
+    echo json_encode([
+        "status" => true,
+        "data" => $data
+    ]);
+}
+
+
+
+
+
+
 
 # ================= CATEGORY CHART (SKU FIXED) =================
 function getCategoryChart($conn) {

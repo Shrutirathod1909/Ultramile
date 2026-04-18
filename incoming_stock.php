@@ -25,7 +25,7 @@ function getUser($conn, $user_id)
     return sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
 }
 
-/* ================= SAFE NEXT ID ================= */
+/* ================= SAFE ID ================= */
 function getNextId($conn)
 {
     $sql = "SELECT ISNULL(MAX(inventory_id),0)+1 AS id FROM incoming_stock WITH (UPDLOCK, HOLDLOCK)";
@@ -43,122 +43,117 @@ function insertStock($conn, $post, $user_id)
         return ["status" => false, "message" => "Invalid user"];
     }
 
-    $product_ids = $post['product_id'] ?? [];
-    $qty_arr     = $post['quantity'] ?? [];
+    /* ================= GET PRODUCT NAME FROM FLUTTER ================= */
+    $product_name = $post['product_name'] ?? '';
 
-    if (empty($product_ids)) {
-        return ["status" => false, "message" => "product_id missing"];
+    if (empty($product_name)) {
+        return ["status" => false, "message" => "product_name missing"];
+    }
+
+    /* ================= FETCH PRODUCT FROM TABLE ================= */
+    $p = sqlsrv_query(
+        $conn,
+        "SELECT * FROM product_detail_description WHERE product_name = ?",
+        [$product_name]
+    );
+
+    if ($p === false) {
+        return ["status" => false, "message" => "Product query failed"];
+    }
+
+    $product = sqlsrv_fetch_array($p, SQLSRV_FETCH_ASSOC);
+
+    if (!$product) {
+        return ["status" => false, "message" => "Product not found in DB"];
+    }
+
+    $product_id = $product['id'];
+
+    $qty = intval($post['quantity'] ?? 0);
+
+    if ($qty <= 0) {
+        return ["status" => false, "message" => "Invalid quantity"];
     }
 
     sqlsrv_begin_transaction($conn);
 
     try {
 
-        for ($i = 0; $i < count($product_ids); $i++) {
+        for ($i = 0; $i < $qty; $i++) {
 
-            $product_id = intval($product_ids[$i]);
-            $qty = intval($qty_arr[$i] ?? 0);
+            $inventory_id = getNextId($conn);
+            $barcode = rand(10000, 99999) . substr($inventory_id, -2);
 
-            if ($qty <= 0) continue;
+            $sql = "
+            INSERT INTO incoming_stock (
+                inventory_id,
+                bill_type,
+                invoice_no,
+                vendor_name,
+                product_name,
+                product_id,
+                sku_code,
+                category,
+                subcategory,
+                size,
+                color,
+                purchase_price,
+                sale_price,
+                barcode,
+                created_by,
+                created_on,
+                ordered,
+                status,
+                from_branch,
+                to_branch,
+                active,
+                expected_date,
+                invoice_date,
+                container_no,
+                bl_no,
+                received_date
+            )
+            VALUES (
+                ?,?,?,?,?,?,?,?,?,?,
+                ?,?,?,?,?,
+                GETDATE(),
+                'N',
+                'received',
+                ?,?,
+                0,
+                ?,?,?,?,?
+            )
+            ";
 
-            /* ================= GET PRODUCT ================= */
-            $p = sqlsrv_query(
-                $conn,
-                "SELECT * FROM product_detail_description WHERE id = ?",
-                [$product_id]
-            );
+            $params = [
+                $inventory_id,
+                $post['bill_type'] ?? 'IN',
+                $post['invoice_no'] ?? '',
+                $product['vendor_name'] ?? '',
+                $product['product_name'],
+                $product_id,
+                $product['sku_code'] ?? '',
+                $product['category'] ?? '',
+                $product['subcategory'] ?? '',
+                $product['size'] ?? '',
+                $product['color'] ?? '',
+                $product['purchase_price'] ?? 0,
+                $product['sale_price'] ?? 0,
+                $barcode,
+                $user_id,
+                $user['city'],
+                $user['city'],
+                $post['expected_date'] ?? null,
+                $post['invoice_date'] ?? null,
+                $post['container_no'] ?? null,
+                $post['bl_no'] ?? null,
+                $post['received_date'] ?? null
+            ];
 
-            if ($p === false) {
-                throw new Exception("Product fetch failed");
-            }
+            $stmt = sqlsrv_query($conn, $sql, $params);
 
-            $product = sqlsrv_fetch_array($p, SQLSRV_FETCH_ASSOC);
-            if (!$product) continue;
-
-            for ($j = 0; $j < $qty; $j++) {
-
-                $inventory_id = getNextId($conn);
-                $barcode = rand(10000, 99999) . substr($inventory_id, -2);
-
-                /* ================= INSERT ================= */
-                $sql = "
-                INSERT INTO incoming_stock (
-                    inventory_id,
-                    bill_type,
-                    invoice_no,
-                    vendor_name,
-                    product_name,
-                    product_id,
-                    sku_code,
-                    category,
-                    subcategory,
-                    size,
-                    color,
-                    purchase_price,
-                    sale_price,
-                    barcode,
-                    created_by,
-                    created_on,
-                    ordered,
-                    status,
-                    from_branch,
-                    to_branch,
-                    active,
-                    expected_date,
-                    invoice_date,
-                    container_no,
-                    bl_no,
-                    received_date
-                )
-                VALUES (
-                    ?,?,?,?,?,?,?,?,?,?,   -- 10
-                    ?,?,?,?,? ,           -- 5 (15)
-                    GETDATE(),
-                    'N',
-                    'received',
-                    ?,?,                 -- (17)
-                    ?,?,?,?,             -- (21)
-                    ?,?                 -- (23)
-                )
-                ";
-
-                /* ================= PARAMS ================= */
-                $params = [
-                    $inventory_id,                         //1
-                    $post['bill_type'] ?? 'IN',            //2
-                    $post['invoice_no'] ?? '',             //3
-                    $product['vendor_name'] ?? '',         //4
-                    $product['product_name'] ?? '',        //5
-                    $product_id,                           //6
-                    $product['sku_code'] ?? '',            //7
-                    $product['category'] ?? '',            //8
-                    $product['subcategory'] ?? '',         //9
-                    $product['size'] ?? '',                //10
-                    $product['color'] ?? '',               //11
-                    $product['purchase_price'] ?? 0,       //12
-                    $product['sale_price'] ?? 0,           //13
-                    $barcode,                              //14
-                    $user_id,                              //15
-                    $user['city'],                         //16
-                    $user['city'],                         //17
-                    '0',                                   //18 active ✅
-                    $post['expected_date'][$i] ?? null,    //19
-                    $post['invoice_date'] ?? null,         //20
-                    $post['container_no'] ?? null,         //21
-                    $post['bl_no'] ?? null,                //22
-                    $post['received_date'] ?? null         //23
-                ];
-
-                /* ================= COUNT CHECK ================= */
-                if (count($params) != 23) {
-                    throw new Exception("Parameter mismatch: " . count($params));
-                }
-
-                $stmt = sqlsrv_query($conn, $sql, $params);
-
-                if ($stmt === false) {
-                    throw new Exception(print_r(sqlsrv_errors(), true));
-                }
+            if ($stmt === false) {
+                throw new Exception(print_r(sqlsrv_errors(), true));
             }
         }
 
