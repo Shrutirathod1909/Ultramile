@@ -2,12 +2,18 @@
 header("Content-Type: application/json; charset=UTF-8");
 ob_start();
 
-error_reporting(0);
-ini_set('display_errors', 0);
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
+require 'vendor/autoload.php'; // ✅ VERY IMPORTANT
 include "db.php";
 
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+use Dompdf\Dompdf;
+
 /* ================= RESPONSE ================= */
+
 function sendResponse($status, $data = [], $message = "")
 {
     ob_clean();
@@ -81,7 +87,7 @@ if ($type == "inprogress") {
 }
 
 /* ================= INVOICE VIEW ================= */
-elseif ($type == "invoice_view") {
+ elseif ($type == "invoice_view") {
 
     $invoice_no = $_GET['invoice_no'] ?? "";
 
@@ -127,7 +133,7 @@ elseif ($type == "invoice_view") {
 }
 
 /* ================= APPROVE + MOVE ================= */
-elseif ($type == "approve") {
+ elseif ($type == "approve") {
 
     $invoice_no = $_POST['invoice_no'] ?? "";
 
@@ -179,8 +185,7 @@ elseif ($type == "approve") {
     sendResponse(true, [], "Approved & moved to fulfilled_orders");
 }
 
-/* ================= DOWNLOAD ================= */
-elseif ($type == "download_invoice") {
+/* ================= DOWNLOAD ================= */ elseif ($type == "download_invoice") {
 
     $invoice_no = $_GET['invoice_no'] ?? "";
 
@@ -227,70 +232,237 @@ elseif ($type == "download_invoice") {
 }
 
 /* ================= SEND EMAIL ================= */
-elseif ($type == "send_email") {
+function generateInvoicePDF($invoice_no, $items)
+{
+    $first = $items[0];
+
+    $rows = "";
+    foreach ($items as $item) {
+        $rows .= "
+        <tr>
+            <td>{$item['product_name']}</td>
+            <td align='center'>{$item['quantity']}</td>
+            <td align='right'>&#8377; {$item['sale_price']}</td>
+            <td align='right'>&#8377; {$item['total_price']}</td>
+        </tr>";
+    }
+
+    // GST Calculation
+    $subtotal = floatval($first['total_price']);
+    $gst = ($subtotal * 18) / 100;
+    $cgst = $gst / 2;
+    $sgst = $gst / 2;
+    $final = $subtotal + $gst;
+
+    $html = "
+    <style>
+        body { font-family: DejaVu Sans, sans-serif; }
+
+        .header {
+            background:#0f172a;
+            color:#fff;
+            padding:15px;
+            font-size:20px;
+            font-weight:bold;
+        }
+
+        .header span {
+            float:right;
+            font-size:14px;
+            font-weight:normal;
+        }
+
+        .container {
+            padding:20px;
+        }
+
+        .box {
+            border:1px solid #ccc;
+            width:300px;
+            padding:10px;
+            margin-top:15px;
+        }
+
+        .table {
+            width:100%;
+            border-collapse: collapse;
+            margin-top:20px;
+        }
+
+        .table th {
+            background:#cbd5e1;
+            padding:10px;
+            text-align:left;
+        }
+
+        .table td {
+            padding:10px;
+        }
+
+        .summary {
+            background:#c8e6c9;
+            margin-top:20px;
+            padding:15px;
+        }
+
+        .summary hr {
+            border:1px solid #333;
+        }
+
+        .total {
+            font-size:18px;
+            font-weight:bold;
+            margin-top:10px;
+        }
+
+        .sign {
+            margin-top:40px;
+            text-align:right;
+        }
+    </style>
+
+    <div class='header'>
+        INVOICE
+        <span>#{$invoice_no}</span>
+    </div>
+
+    <div class='container'>
+
+        <div class='box'>
+            <b>Customer Details</b><br><br>
+            Name: {$first['customer_name']}<br>
+            Mobile: {$first['mobile']}<br>
+            Address: {$first['address']}<br>
+            Date: {$first['created_on']}
+        </div>
+
+        <table class='table'>
+            <tr>
+                <th>Item</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Total</th>
+            </tr>
+            $rows
+        </table>
+
+        <div class='summary'>
+            Subtotal: &#8377; {$subtotal}<br>
+            CGST: &#8377; {$cgst}<br>
+            SGST: &#8377; {$sgst}
+            <hr>
+            <div class='total'>
+                TOTAL: &#8377; {$final}
+            </div>
+        </div>
+
+        <div class='sign'>
+            Authorized Signatory
+        </div>
+
+    </div>
+    ";
+
+    $dompdf = new Dompdf();
+    $dompdf->loadHtml($html);
+    $dompdf->set_option('isHtml5ParserEnabled', true);
+    $dompdf->setPaper('A4');
+    $dompdf->render();
+
+    $folder = __DIR__ . "/invoices";
+    if (!file_exists($folder)) mkdir($folder, 0777, true);
+
+    $filePath = "$folder/$invoice_no.pdf";
+    file_put_contents($filePath, $dompdf->output());
+
+    return $filePath;
+}
+
+/* ================= MAIN API ================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+
+    if ($type == "inprogress") {
+
+        // existing inprogress code...
+
+    } elseif ($type == "invoice_view") {
+
+        // existing invoice_view code...
+
+    } elseif ($type == "download_invoice") {
+
+        // existing download code...
+
+    } else {
+        sendResponse(false, [], "Invalid GET type");
+    }
+
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
-
-        require 'vendor/autoload.php';
 
         $invoice_no = $_POST['invoice_no'] ?? "";
         $email = $_POST['email'] ?? "";
 
         if ($invoice_no == "" || $email == "") {
-            sendResponse(false, [], "required fields missing");
+            sendResponse(false, [], "Missing fields");
         }
 
+        // FETCH DATA
         $sql = "SELECT * FROM orders WHERE invoice_no = ?";
         $stmt = sqlsrv_query($conn, $sql, [$invoice_no]);
 
-        $first = null;
-
-        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-            if (!$first) $first = $row;
+        if (!$stmt) {
+            sendResponse(false, sqlsrv_errors(), "SQL Error");
         }
 
-        if (!$first) {
+        $items = [];
+        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+            $row["created_on"] = formatDate($row["created_on"]);
+            $items[] = $row;
+        }
+
+        if (count($items) == 0) {
             sendResponse(false, [], "Invoice not found");
         }
 
-        $amount = floatval($first["total_price"] ?? 0);
+        // GST
+        $amount = floatval($items[0]["total_price"] ?? 0);
+        $gstData = calculateGST($amount);
+        $items[0]["final_amount"] = $gstData["final_price"];
 
-        $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+        // PDF
+        $filePath = generateInvoicePDF($invoice_no, $items);
+
+        // EMAIL
+        $mail = new PHPMailer(true);
 
         $mail->isSMTP();
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-
-        $mail->Username = 'yourgmail@gmail.com';
-        $mail->Password = 'your_app_password';
-
+   $mail->Username = 'shrutirathod1909@gmail.com';
+        $mail->Password = 'xzggtfqofcasfjlc';
         $mail->SMTPSecure = 'tls';
         $mail->Port = 587;
 
-        $mail->setFrom('yourgmail@gmail.com', 'Invoice System');
+        $mail->setFrom('shrutirathod1909@gmail.com', 'Invoice System');
         $mail->addAddress($email);
+
+        $mail->addAttachment($filePath);
 
         $mail->isHTML(true);
         $mail->Subject = "Invoice #$invoice_no";
-
-        $mail->Body = "
-            <h2>Invoice Details</h2>
-            <p><b>Invoice:</b> $invoice_no</p>
-            <p><b>Customer:</b> {$first['customer_name']}</p>
-            <p><b>Total:</b> ₹$amount</p>
-        ";
+        $mail->Body = "Your invoice is attached.";
 
         $mail->send();
 
         sendResponse(true, [], "Email sent successfully");
 
-    } catch (\Throwable $e) {
+    } catch (Exception $e) {
         sendResponse(false, [], $e->getMessage());
     }
-}
 
-/* ================= DEFAULT ================= */
-else {
-    sendResponse(false, [], "Invalid type");
+} else {
+    sendResponse(false, [], "Invalid request method");
 }
-?>

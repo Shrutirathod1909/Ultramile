@@ -4,9 +4,17 @@ ini_set('display_errors', 1);
 
 require_once "db.php";
 
-header("Content-Type: application/json");
+/* =========================
+   ACTION CHECK
+========================= */
+$action = $_GET['action'] ?? '';
 
-if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
+/* =========================
+   1. BULK INSERT API
+========================= */
+if ($action == "bulkInsert") {
+
+    header("Content-Type: application/json");
 
     $input = json_decode(file_get_contents("php://input"), true);
     $data = $input['data'] ?? [];
@@ -21,7 +29,7 @@ if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
 
         if ($product_name == '') continue;
 
-        // ✅ DUPLICATE CHECK
+        // CHECK DUPLICATE
         $checkSql = "SELECT id FROM product_detail_description WHERE product_code = ?";
         $checkStmt = sqlsrv_query($conn, $checkSql, [$sku_code]);
 
@@ -30,7 +38,7 @@ if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
             continue;
         }
 
-        // ✅ GST FIX (handles both key types)
+        // GST
         $gstType = $row['gst'] ?? $row['gst_type'] ?? 'Exclusive';
         $gstPerc = $row['gstPerc'] ?? $row['gst_perc'] ?? 0;
 
@@ -38,16 +46,16 @@ if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
         $gstPerc = floatval($gstPerc);
         $gstType = strtolower(trim($gstType));
 
-        // ✅ GST CALCULATION
+        // GST CALC
         if ($gstType == "inclusive") {
-            $salePrice = $price / (1 + ($gstPerc / 100)); // without GST
-            $mrpPrice  = $price; // with GST
+            $salePrice = $price / (1 + ($gstPerc / 100));
+            $mrpPrice  = $price;
         } else {
             $salePrice = $price;
             $mrpPrice  = $price + ($price * $gstPerc / 100);
         }
 
-        // ✅ INSERT
+        // INSERT
         $sql = "INSERT INTO product_detail_description
         (product_name, product_code, category, type, mrp_price, sale_price, gst_type, gst_perc, created_on)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE())";
@@ -63,7 +71,14 @@ if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
             $gstPerc
         ];
 
-        sqlsrv_query($conn, $sql, $params);
+        $result = sqlsrv_query($conn, $sql, $params);
+
+        if ($result === false) {
+            die(json_encode([
+                "status" => false,
+                "error" => sqlsrv_errors()
+            ]));
+        }
 
         $inserted++;
     }
@@ -73,5 +88,33 @@ if (isset($_GET['action']) && $_GET['action'] == "bulkInsert") {
         "inserted" => $inserted,
         "skipped" => $skipped
     ]);
+
+    exit;
 }
+
+
+/* =========================
+   2. EXCEL DOWNLOAD API
+========================= */
+if ($action == "downloadTemplate") {
+
+    header("Content-Type: application/vnd.ms-excel");
+    header("Content-Disposition: attachment; filename=product_template.xls");
+    header("Pragma: no-cache");
+    header("Expires: 0");
+
+    // ✅ PROPER COLUMN NAMES
+    echo "Product Name\tSKU Code\tCategory\tSize\tPrice\tGST Type\tGST Percentage\n";
+
+    exit;
+}
+
+
+/* =========================
+   DEFAULT RESPONSE
+========================= */
+echo json_encode([
+    "status" => false,
+    "message" => "Invalid action"
+]);
 ?>
