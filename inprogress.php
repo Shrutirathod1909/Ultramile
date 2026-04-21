@@ -133,7 +133,7 @@ if ($type == "inprogress") {
 }
 
 /* ================= APPROVE + MOVE ================= */
- elseif ($type == "approve") {
+elseif ($type == "approve") {
 
     $invoice_no = $_POST['invoice_no'] ?? "";
 
@@ -141,51 +141,137 @@ if ($type == "inprogress") {
         sendResponse(false, [], "invoice_no required");
     }
 
-    /* 1. UPDATE */
-    $sql1 = "UPDATE orders SET status='Approved', fulfilled='1' WHERE invoice_no=?";
-    $stmt1 = sqlsrv_query($conn, $sql1, [$invoice_no]);
+    sqlsrv_begin_transaction($conn);
 
-    if ($stmt1 === false) {
-        sendResponse(false, [], "Update failed");
+    try {
+
+        /* 1. UPDATE ORDER */
+        $sql1 = "UPDATE orders 
+                 SET status='Approved', fulfilled=1 
+                 WHERE invoice_no=? AND status!='Approved'";
+        $stmt1 = sqlsrv_query($conn, $sql1, [$invoice_no]);
+
+        if (!$stmt1) throw new Exception(print_r(sqlsrv_errors(), true));
+
+        /* 2. GET ORDER ITEMS */
+        $sql2 = "SELECT * FROM orders WHERE invoice_no=?";
+        $stmt2 = sqlsrv_query($conn, $sql2, [$invoice_no]);
+
+        if (!$stmt2) throw new Exception(print_r(sqlsrv_errors(), true));
+
+        while ($item = sqlsrv_fetch_array($stmt2, SQLSRV_FETCH_ASSOC)) {
+
+            $product_name = trim($item['product_name']);
+            $sold_qty     = (int)$item['quantity'];
+            $sale_price   = (float)($item['sale_price'] ?? 0);
+            $created_by   = (int)($item['created_by'] ?? 0);
+            $order_date   = $item['order_date'] ?? null;
+
+            if (!$product_name) {
+                throw new Exception("Product name missing in order");
+            }
+
+            /* 3. GET PRODUCT DETAILS */
+            $sqlProd = "SELECT TOP 1 id, category
+                        FROM product_detail_description
+                        WHERE LOWER(LTRIM(RTRIM(product_name))) = LOWER(LTRIM(RTRIM(?)))";
+
+            $stmtProd = sqlsrv_query($conn, $sqlProd, [$product_name]);
+
+            if (!$stmtProd) throw new Exception(print_r(sqlsrv_errors(), true));
+
+            $prodRow = sqlsrv_fetch_array($stmtProd, SQLSRV_FETCH_ASSOC);
+
+            if (!$prodRow) {
+                throw new Exception("Product not found: " . $product_name);
+            }
+
+            $product_id = (string)$prodRow['id'];
+            $category   = $prodRow['category'] ?? '';
+
+            /* 4. GET STOCK (IMPORTANT FIX) */
+            $sqlStock = "SELECT TOP 1 inventory_id, product_qty
+             FROM inventory
+             WHERE LOWER(LTRIM(RTRIM(product_name))) = LOWER(LTRIM(RTRIM(?)))
+             ORDER BY product_qty DESC";
+            $stmtStock = sqlsrv_query($conn, $sqlStock, [$product_name]);
+
+            if (!$stmtStock) throw new Exception(print_r(sqlsrv_errors(), true));
+
+            $stockRow = sqlsrv_fetch_array($stmtStock, SQLSRV_FETCH_ASSOC);
+
+            if (!$stockRow) {
+                throw new Exception("Stock not found for product: " . $product_name);
+            }
+
+            $inventory_id   = (int)$stockRow['inventory_id'];
+         $previous_stock = (int)$stockRow['product_qty']; // ✅ FIX
+
+            /* Prevent negative stock */
+            if ($previous_stock < $sold_qty) {
+                throw new Exception("Not enough stock for " . $product_name);
+            }
+
+            /* 5. CALCULATE STOCK */
+            $new_stock = $previous_stock - $sold_qty;
+
+            /* 6. INSERT INTO inventory_log */
+            $sql3 = "INSERT INTO inventory_log
+            (product_id, product_name, category, barcode,
+             sale_price, qty, totalproduct_qty,
+             invoice_no, invoice_date, sales_inv_no,
+             order_no, order_date,
+             status, created_on, created_by, active, inventory_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?, ?)";
+
+            $params3 = [
+                $product_id,
+                $product_name,
+                $category,
+                $barcode,
+                $sale_price,
+                $sold_qty,
+                $new_stock,               // ✅ correct stock
+                $invoice_no,
+                date('Y-m-d H:i:s'),
+                $invoice_no,
+                $invoice_no,
+                $order_date,
+                'sales_inventory',
+                $created_by,
+                1,
+                $inventory_id
+            ];
+
+            $stmt3 = sqlsrv_query($conn, $sql3, $params3);
+
+            if (!$stmt3) throw new Exception(print_r(sqlsrv_errors(), true));
+
+            /* 7. UPDATE INVENTORY (IMPORTANT FIX) */
+            $sql4 = "UPDATE inventory 
+                     SET product_qty=? 
+                     WHERE inventory_id=?";
+
+            $stmt4 = sqlsrv_query($conn, $sql4, [$new_stock, $inventory_id]);
+
+            if (!$stmt4) throw new Exception(print_r(sqlsrv_errors(), true));
+        }
+
+        /* 8. COMMIT */
+        sqlsrv_commit($conn);
+
+        sendResponse(true, [], "Approved & inventory updated successfully");
+
+    } catch (Exception $e) {
+
+        /* 9. ROLLBACK */
+        sqlsrv_rollback($conn);
+
+        sendResponse(false, [], $e->getMessage());
     }
-
-    /* 2. FETCH */
-    $sql2 = "SELECT * FROM orders WHERE invoice_no=?";
-    $stmt2 = sqlsrv_query($conn, $sql2, [$invoice_no]);
-
-    $items = [];
-
-    while ($row = sqlsrv_fetch_array($stmt2, SQLSRV_FETCH_ASSOC)) {
-        $items[] = $row;
-    }
-
-    if (count($items) == 0) {
-        sendResponse(false, [], "No data found");
-    }
-
-    /* 3. INSERT */
-    foreach ($items as $item) {
-
-        $sql3 = "INSERT INTO fulfilled_orders 
-                (invoice_no, customer_name, product_name, quantity, total_price, created_on)
-                VALUES (?, ?, ?, ?, ?, ?)";
-
-        $params = [
-            $item['invoice_no'],
-            $item['customer_name'],
-            $item['product_name'] ?? '',
-            $item['quantity'],
-            $item['total_price'],
-            $item['created_on']
-        ];
-
-        sqlsrv_query($conn, $sql3, $params);
-    }
-
-    sendResponse(true, [], "Approved & moved to fulfilled_orders");
 }
-
-/* ================= DOWNLOAD ================= */ elseif ($type == "download_invoice") {
+/* ================= DOWNLOAD ================= */ 
+elseif ($type == "download_invoice") {
 
     $invoice_no = $_GET['invoice_no'] ?? "";
 

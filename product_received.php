@@ -1,200 +1,449 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors',1);
 
 header("Content-Type: application/json");
 require_once "db.php";
 
 date_default_timezone_set("Asia/Kolkata");
 
-// ================= RESPONSE =================
-function response($status, $message, $data = []) {
-    echo json_encode([
-        "status" => $status,
-        "message" => $message,
-        "data" => $data
-    ]);
-    exit;
+function response($status,$message,$data=[]){
+ echo json_encode([
+   "status"=>$status,
+   "message"=>$message,
+   "data"=>$data
+ ]);
+ exit;
 }
 
-// ================= BARCODE =================
-function generateBarcode($conn) {
-    do {
-        $barcode = "UM" . uniqid() . rand(100, 999);
+$post=json_decode(
+ file_get_contents("php://input"),
+ true
+);
 
-        $sql = "SELECT COUNT(*) AS cnt FROM inventory WHERE barcode = ?";
-        $stmt = sqlsrv_query($conn, $sql, [$barcode]);
-
-        if ($stmt === false) {
-            response(false, "Barcode check failed", sqlsrv_errors());
-        }
-
-        $row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
-        $exists = $row['cnt'] ?? 0;
-
-    } while ($exists > 0);
-
-    return $barcode;
+if(!$post){
+ $post=$_POST;
 }
 
-// ================= INSERT =================
-function insertInventory($conn, $data) {
+$type=$_GET['type'] ?? "";
 
-    $sql = "INSERT INTO inventory (
-        product_name,
-        sku_code,
-        category,
-        purchase_price,
-        barcode,
-        status,
-        active,
-        readable,
-        invoice_no,
-        invoice_date,
-        container_no,
-        bl_no,
-        received_date,
-        created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-    $stmt = sqlsrv_query($conn, $sql, $data);
+/* ================= INSERT ================= */
 
-    if ($stmt === false) {
-        response(false, "Insert failed", sqlsrv_errors());
-    }
+if($type=="insert"){
+
+$product_name=trim(
+ $post['product_name'] ?? ''
+);
+
+$qty=intval(
+ $post['qty'] ?? 0
+);
+
+$barcode=trim(
+ $post['barcode'] ?? ''
+);
+
+if($product_name=='' || $qty<=0){
+ response(
+  false,
+  "product_name and qty required"
+ );
 }
 
-// ================= ROUTER =================
-$type = $_GET['type'] ?? "";
+/* PRODUCT */
 
-/*
-=================================================
-1️⃣ INSERT API
-=================================================
-*/
-if ($type == "insert" && isset($_POST['save'])) {
+$p=sqlsrv_query(
+ $conn,
+ "SELECT * FROM product_detail_description
+  WHERE product_name=?",
+ [$product_name]
+);
 
-    $name   = trim($_POST['product_name'] ?? '');
-    $sku    = trim($_POST['sku_code'] ?? '');
-    $price  = (float)($_POST['price'] ?? 0);
-    $qty    = (int)($_POST['qty'] ?? 0);
+$product=sqlsrv_fetch_array(
+ $p,
+ SQLSRV_FETCH_ASSOC
+);
 
-    $invoice_no    = $_POST['invoice_no'] ?? '';
-    $invoice_date  = $_POST['invoice_date'] ?? date('Y-m-d');
-    $container_no  = $_POST['container_no'] ?? '';
-    $bl_no         = $_POST['bl_no'] ?? '';
-    $received_date = date('Y-m-d');
-
-    $created_by = (int)($_POST['created_by'] ?? 0);
-
-    if ($name == '' || $qty <= 0) {
-        response(false, "Invalid input");
-    }
-
-    // ================= CATEGORY FETCH =================
-    $catSql = "SELECT TOP 1 category 
-               FROM dbo.product_detail_description 
-               WHERE product_name = ?";
-
-    $catStmt = sqlsrv_query($conn, $catSql, [$name]);
-
-    if ($catStmt === false) {
-        response(false, "Category fetch failed", sqlsrv_errors());
-    }
-
-    $catRow = sqlsrv_fetch_array($catStmt, SQLSRV_FETCH_ASSOC);
-    $category = $catRow['category'] ?? '';
-
-    // ================= INVOICE CHECK =================
-    if ($invoice_no != '') {
-
-        $checkSql = "SELECT COUNT(*) as cnt FROM inventory WHERE invoice_no = ?";
-        $checkStmt = sqlsrv_query($conn, $checkSql, [$invoice_no]);
-
-        if ($checkStmt === false) {
-            response(false, "Invoice check failed", sqlsrv_errors());
-        }
-
-        $checkRow = sqlsrv_fetch_array($checkStmt, SQLSRV_FETCH_ASSOC);
-
-        if (($checkRow['cnt'] ?? 0) > 0) {
-            response(false, "Invoice number already exists");
-        }
-    }
-
-    // ================= TRANSACTION =================
-    sqlsrv_begin_transaction($conn);
-
-    try {
-
-        for ($i = 0; $i < $qty; $i++) {
-
-            $barcode = generateBarcode($conn);
-
-            insertInventory($conn, [
-                $name,
-                $sku,
-                $category,
-                $price,
-                $barcode,
-                'received',
-                1,
-                1,
-                $invoice_no,
-                $invoice_date,
-                $container_no,
-                $bl_no,
-                $received_date,
-                $created_by
-            ]);
-        }
-
-        sqlsrv_commit($conn);
-
-        response(true, "Product inserted successfully");
-
-    } catch (Exception $e) {
-        sqlsrv_rollback($conn);
-        response(false, "Insert failed", ["error" => $e->getMessage()]);
-    }
+if(!$product){
+ response(false,"Product not found");
 }
 
-/*
-=================================================
-2️⃣ LIST API
-=================================================
-*/
-if ($type == "list") {
+/* OPTIONAL */
 
-    $sql = "SELECT 
-                inventory_id,
-                product_name,
-                sku_code,
-                category,
-                purchase_price,
-                barcode,
-                created_by,
-                invoice_no,
-                invoice_date,
-                container_no,
-                bl_no,
-                received_date
-            FROM inventory
-            ORDER BY inventory_id DESC";
+$purchase_price=floatval(
+ $post['purchase_price']
+ ?? $product['purchase_price']
+ ?? 0
+);
 
-    $stmt = sqlsrv_query($conn, $sql);
+$container_no=
+$post['container_no'] ?? null;
 
-    if ($stmt === false) {
-        response(false, "Fetch failed", sqlsrv_errors());
-    }
+$bl_no=
+$post['bl_no'] ?? null;
 
-    $data = [];
+$invoice_no=
+$post['invoice_no'] ?? null;
 
-    while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-        $data[] = $row;
-    }
+$invoice_date=
+$post['invoice_date']
+?? date('Y-m-d');
 
-    response(true, "Data fetched successfully", $data);
+$created_by=intval(
+$post['created_by'] ?? 0
+);
+
+$status=
+$post['status']
+?? "invt_received";
+
+
+if($barcode==''){
+ $barcode=
+ "BC".rand(
+ 100000,
+ 999999
+ );
+}
+
+sqlsrv_begin_transaction(
+ $conn
+);
+
+try{
+
+/* ===== INSERT INVENTORY ===== */
+
+$sql1="
+INSERT INTO inventory(
+
+ product_name,
+ product_id,
+ sku_code,
+ category,
+ subcategory,
+ size,
+ color,
+ barcode,
+ purchase_price,
+ product_qty,
+ container_no,
+ bl_no,
+ bill_type,
+ invoice_no,
+ invoice_date,
+ vendor_name,
+ created_by,
+ created_on,
+ status,
+ active,
+ readable,
+ received_date
+
+)
+
+OUTPUT INSERTED.inventory_id
+
+VALUES(
+
+ ?,?,?,?,?,?,?,?,?,?,
+ ?,?,?,?,?,
+ ?,?,
+ GETDATE(),
+ ?,?,?,GETDATE()
+
+)";
+
+$params1=[
+
+$product_name,
+$product['id'],
+$post['sku_code'] ?? $product['sku_code'],
+$product['category'],
+$product['subcategory'],
+$product['size'],
+$product['color'],
+$barcode,
+$purchase_price,
+$qty,
+$container_no,
+$bl_no,
+'IN',
+$invoice_no,
+$invoice_date,
+$product['vendor_name'],
+$created_by,
+$status,
+1,
+1
+
+];
+
+$stmt1=
+sqlsrv_query(
+ $conn,
+ $sql1,
+ $params1
+);
+
+if($stmt1===false){
+ throw new Exception(
+ print_r(
+ sqlsrv_errors(),
+ true
+ )
+ );
+}
+
+/* GET INSERTED ID */
+
+$row=
+sqlsrv_fetch_array(
+ $stmt1,
+ SQLSRV_FETCH_ASSOC
+);
+
+$inventory_id=
+intval(
+$row['inventory_id']
+);
+
+if(
+ !$inventory_id
+){
+ throw new Exception(
+ "Inventory ID not generated"
+ );
+}
+
+
+/* ===== TOTAL STOCK ===== */
+
+$totalQtySql=
+sqlsrv_query(
+$conn,
+
+"SELECT
+ SUM(product_qty)
+ total_qty
+
+ FROM inventory
+
+ WHERE product_id=?",
+
+[$product['id']]
+);
+
+$totalRow=
+sqlsrv_fetch_array(
+$totalQtySql,
+SQLSRV_FETCH_ASSOC
+);
+
+$totalproduct_qty=
+intval(
+$totalRow['total_qty']
+?? 0
+);
+
+
+//* ===== AVG PRICE ===== */
+
+$avgSql=
+sqlsrv_query(
+$conn,
+
+"SELECT
+
+SUM(
+ product_qty * purchase_price
+) as total_value,
+
+SUM(
+ product_qty
+) as total_qty
+
+FROM inventory
+
+WHERE product_id=?",
+
+[$product['id']]
+);
+
+$avgRow=
+sqlsrv_fetch_array(
+$avgSql,
+SQLSRV_FETCH_ASSOC
+);
+
+$totalValue=
+floatval(
+$avgRow['total_value'] ?? 0
+);
+
+$totalQty=
+floatval(
+$avgRow['total_qty'] ?? 0
+);
+
+/* weighted average */
+
+$average_price=
+($totalQty > 0)
+? round(
+   $totalValue / $totalQty,
+   2
+ )
+: 0;
+
+/* ===== INSERT LOG ===== */
+
+$sql2="
+
+INSERT INTO inventory_log(
+
+inventory_id,
+product_name,
+product_id,
+sku_code,
+category,
+subcategory,
+size,
+color,
+barcode,
+purchase_price,
+product_qty,
+totalproduct_qty,
+average_price,
+container_no,
+bl_no,
+invoice_no,
+invoice_date,
+created_by,
+created_on,
+status
+
+)
+
+VALUES(
+
+?,?,?,?,?,?,?,?,?,?,
+?,?,?,?,?,
+?,?,?,
+GETDATE(),
+?
+
+)";
+
+$params2=[
+
+$inventory_id,
+$product_name,
+$product['id'],
+$post['sku_code'] ?? $product['sku_code'],
+$product['category'],
+$product['subcategory'],
+$product['size'],
+$product['color'],
+$barcode,
+$purchase_price,
+$qty,
+$totalproduct_qty,
+$average_price,
+$container_no,
+$bl_no,
+$invoice_no,
+$invoice_date,
+$created_by,
+$status
+
+];
+
+$stmt2=
+sqlsrv_query(
+$conn,
+$sql2,
+$params2
+);
+
+if($stmt2===false){
+
+throw new Exception(
+ print_r(
+ sqlsrv_errors(),
+ true
+ )
+);
+
+}
+
+sqlsrv_commit($conn);
+
+response(
+true,
+"Inserted Successfully",
+[
+"inventory_id"=>$inventory_id,
+"totalproduct_qty"=>$totalproduct_qty,
+"average_price"=>$average_price
+]
+);
+
+}
+
+catch(Exception $e){
+
+sqlsrv_rollback(
+$conn
+);
+
+response(
+false,
+"Insert failed",
+$e->getMessage()
+);
+
+}
+
+}
+
+
+
+/* ================= LIST ================= */
+
+if($type=="list"){
+
+$sql="
+SELECT *
+FROM inventory
+ORDER BY inventory_id DESC
+";
+
+$stmt=
+sqlsrv_query(
+$conn,
+$sql
+);
+
+$data=[];
+
+while(
+$row=
+sqlsrv_fetch_array(
+$stmt,
+SQLSRV_FETCH_ASSOC
+)
+){
+$data[]=$row;
+}
+
+response(
+true,
+"List fetched",
+$data
+);
+
 }
 
 /*
@@ -202,6 +451,7 @@ if ($type == "list") {
 3️⃣ PRODUCT LIST
 =================================================
 */
+
 if ($type == "product_list") {
 
     $sql = "SELECT DISTINCT product_name 
@@ -225,6 +475,54 @@ if ($type == "product_list") {
     response(true, "Product list fetched", $products);
 }
 
-// ================= DEFAULT =================
-response(false, "Invalid API type");
+
+
+
+
+
+
+
+
+/* ================= LOG ================= */
+
+if($type=="log_list"){
+
+$sql="
+SELECT *
+FROM inventory_log
+ORDER BY id DESC
+";
+
+$stmt=
+sqlsrv_query(
+$conn,
+$sql
+);
+
+$data=[];
+
+while(
+$row=
+sqlsrv_fetch_array(
+$stmt,
+SQLSRV_FETCH_ASSOC
+)
+){
+$data[]=$row;
+}
+
+response(
+true,
+"Log fetched",
+$data
+);
+
+}
+
+
+response(
+false,
+"Invalid type"
+);
+
 ?>

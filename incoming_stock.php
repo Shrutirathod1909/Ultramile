@@ -19,7 +19,12 @@ function response($status, $message, $data = [])
 /* ================= USER ================= */
 function getUser($conn, $user_id)
 {
-    $stmt = sqlsrv_query($conn, "SELECT * FROM users WHERE id = ?", [$user_id]);
+    $stmt = sqlsrv_query(
+        $conn,
+        "SELECT * FROM users WHERE id = ?",
+        [$user_id]
+    );
+
     if ($stmt === false) return null;
 
     return sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
@@ -37,37 +42,34 @@ function getNextId($conn)
 /* ================= INSERT STOCK ================= */
 function insertStock($conn, $post, $user_id)
 {
+    // 🔥 FIX: user_id safe
+    if (!$user_id || $user_id == 0) {
+        return ["status" => false, "message" => "Invalid user ID"];
+    }
+
     $user = getUser($conn, $user_id);
 
     if (!$user) {
         return ["status" => false, "message" => "Invalid user"];
     }
 
-    /* ================= GET PRODUCT NAME FROM FLUTTER ================= */
     $product_name = $post['product_name'] ?? '';
 
-    if (empty($product_name)) {
+    if ($product_name == '') {
         return ["status" => false, "message" => "product_name missing"];
     }
 
-    /* ================= FETCH PRODUCT FROM TABLE ================= */
     $p = sqlsrv_query(
         $conn,
         "SELECT * FROM product_detail_description WHERE product_name = ?",
         [$product_name]
     );
 
-    if ($p === false) {
-        return ["status" => false, "message" => "Product query failed"];
-    }
-
     $product = sqlsrv_fetch_array($p, SQLSRV_FETCH_ASSOC);
 
     if (!$product) {
-        return ["status" => false, "message" => "Product not found in DB"];
+        return ["status" => false, "message" => "Product not found"];
     }
-
-    $product_id = $product['id'];
 
     $qty = intval($post['quantity'] ?? 0);
 
@@ -75,86 +77,88 @@ function insertStock($conn, $post, $user_id)
         return ["status" => false, "message" => "Invalid quantity"];
     }
 
+    $purchase_price = floatval($post['purchase_price'] ?? $product['purchase_price'] ?? 0);
+    $sale_price = floatval($post['sale_price'] ?? $product['sale_price'] ?? 0);
+
     sqlsrv_begin_transaction($conn);
 
     try {
 
-        for ($i = 0; $i < $qty; $i++) {
+        $inventory_id = getNextId($conn);
+        $barcode = rand(10000, 99999) . $inventory_id;
 
-            $inventory_id = getNextId($conn);
-            $barcode = rand(10000, 99999) . substr($inventory_id, -2);
+        $sql = "
+        INSERT INTO incoming_stock (
+            inventory_id,
+            bill_type,
+            invoice_no,
+            vendor_name,
+            product_name,
+            product_id,
+            sku_code,
+            category,
+            subcategory,
+            size,
+            color,
+            purchase_price,
+            sale_price,
+            barcode,
+            created_by,
+            created_on,
+            ordered,
+            status,
+            from_branch,
+            to_branch,
+            active,
+            expected_date,
+            invoice_date,
+            container_no,
+            bl_no,
+            received_date,
+            product_qty
+        )
+        VALUES (
+            ?,?,?,?,?,?,?,?,?,?,
+            ?,?,?,?,?,
+            GETDATE(),
+            'N',
+            'received',
+            ?,?,
+            0,
+            ?,?,?,?,?,
+            ?
+        )";
 
-            $sql = "
-            INSERT INTO incoming_stock (
-                inventory_id,
-                bill_type,
-                invoice_no,
-                vendor_name,
-                product_name,
-                product_id,
-                sku_code,
-                category,
-                subcategory,
-                size,
-                color,
-                purchase_price,
-                sale_price,
-                barcode,
-                created_by,
-                created_on,
-                ordered,
-                status,
-                from_branch,
-                to_branch,
-                active,
-                expected_date,
-                invoice_date,
-                container_no,
-                bl_no,
-                received_date
-            )
-            VALUES (
-                ?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,
-                GETDATE(),
-                'N',
-                'received',
-                ?,?,
-                0,
-                ?,?,?,?,?
-            )
-            ";
+        $params = [
+            $inventory_id,
+            $post['bill_type'] ?? 'IN',
+            $post['invoice_no'] ?? '',
+            $product['vendor_name'] ?? '',
+            $product['product_name'],
+            $product['id'],
+            $product['sku_code'] ?? '',
+            $product['category'] ?? '',
+            $product['subcategory'] ?? '',
+            $product['size'] ?? '',
+            $product['color'] ?? '',
+            $purchase_price,
+            $sale_price,
+            $barcode,
+            $user_id,
+            $user['city'] ?? '',
+            $user['city'] ?? '',
+            $post['expected_date'] ?? null,
+            $post['invoice_date'] ?? null,
+            $post['container_no'] ?? null,
+            $post['bl_no'] ?? null,
+            $post['received_date'] ?? null,
+            $qty
+        ];
 
-            $params = [
-                $inventory_id,
-                $post['bill_type'] ?? 'IN',
-                $post['invoice_no'] ?? '',
-                $product['vendor_name'] ?? '',
-                $product['product_name'],
-                $product_id,
-                $product['sku_code'] ?? '',
-                $product['category'] ?? '',
-                $product['subcategory'] ?? '',
-                $product['size'] ?? '',
-                $product['color'] ?? '',
-                $product['purchase_price'] ?? 0,
-                $product['sale_price'] ?? 0,
-                $barcode,
-                $user_id,
-                $user['city'],
-                $user['city'],
-                $post['expected_date'] ?? null,
-                $post['invoice_date'] ?? null,
-                $post['container_no'] ?? null,
-                $post['bl_no'] ?? null,
-                $post['received_date'] ?? null
-            ];
+        $stmt = sqlsrv_query($conn, $sql, $params);
 
-            $stmt = sqlsrv_query($conn, $sql, $params);
-
-            if ($stmt === false) {
-                throw new Exception(print_r(sqlsrv_errors(), true));
-            }
+        if ($stmt === false) {
+            throw new Exception(print_r(sqlsrv_errors(), true));
         }
 
         sqlsrv_commit($conn);
@@ -165,7 +169,6 @@ function insertStock($conn, $post, $user_id)
         ];
 
     } catch (Exception $e) {
-
         sqlsrv_rollback($conn);
 
         return [
@@ -187,6 +190,8 @@ function listStock($conn, $user_id)
                 container_no,
                 bl_no,
                 purchase_price,
+                sale_price,
+                product_qty,
                 status,
                 created_on
             FROM incoming_stock
@@ -215,17 +220,25 @@ function listStock($conn, $user_id)
 
 /* ================= ROUTER ================= */
 $action = $_GET['action'] ?? '';
-$user_id = $_GET['user_id'] ?? 0;
+
+// 🔥 FIX HERE (MOST IMPORTANT)
+$user_id = $_GET['user_id']
+    ?? $_POST['user_id']
+    ?? 0;
+
+$post = json_decode(file_get_contents("php://input"), true);
+if (!$post) $post = $_POST;
 
 switch ($action) {
 
     case "insert_stock":
-        echo json_encode(insertStock($conn, $_POST, $user_id));
+        echo json_encode(insertStock($conn, $post, $user_id));
         break;
 
-    case "list":
+          case "list":
         listStock($conn, $user_id);
         break;
+
 
     default:
         response(false, "Invalid action");

@@ -73,61 +73,104 @@ function isAllZero($row, $keys) {
 }
 
 # ================= PRODUCT PROFITABILITY =================
-function getProductProfit($conn) {
-
-    $from = $_GET['from'] ?? null;
-    $to   = $_GET['to'] ?? null;
+function getProductProfit($conn)
+{
+    $from   = $_GET['from'] ?? null;
+    $to     = $_GET['to'] ?? null;
     $branch = $_GET['branch'] ?? '';
 
-    $sql = "
-        SELECT TOP 10
-            o.product_name,
+    
 
-            SUM(ISNULL(CAST(o.final_amount AS DECIMAL(18,2)), 0)) AS total_sales,
+$sql = "
+SELECT
+    product_name,
 
-            SUM(ISNULL(CAST(o.sale_price AS DECIMAL(18,2)), 0) * ISNULL(o.quantity, 0)) AS total_cost,
+    SUM(CASE 
+        WHEN LOWER(status) = 'sales_inventory' 
+        THEN ISNULL(qty, 0)
+        ELSE 0 
+    END) AS total_sold_qty,
 
-            (
-                SUM(ISNULL(CAST(o.final_amount AS DECIMAL(18,2)), 0))
-                - SUM(ISNULL(CAST(o.sale_price AS DECIMAL(18,2)), 0) * ISNULL(o.quantity, 0))
-            ) AS profit
+    SUM(CASE 
+        WHEN LOWER(status) = 'invt_received' 
+        THEN ISNULL(product_qty, 0)
+        ELSE 0 
+    END) AS total_received_qty,
 
-        FROM orders o
-        WHERE o.product_name IS NOT NULL
-    ";
+    (
+        SUM(CASE WHEN LOWER(status) = 'invt_received' THEN ISNULL(product_qty,0) ELSE 0 END)
+        -
+        SUM(CASE WHEN LOWER(status) = 'sales_inventory' THEN ISNULL(qty,0) ELSE 0 END)
+    ) AS remaining_stock,
+
+    SUM(CASE 
+        WHEN LOWER(status) = 'sales_inventory' 
+        THEN ISNULL(sale_price,0) * ISNULL(qty,0)
+        ELSE 0 
+    END) AS total_sales,
+
+    SUM(CASE 
+        WHEN LOWER(status) = 'invt_received' 
+        THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
+        ELSE 0 
+    END) AS total_cost,
+
+    (
+        SUM(CASE WHEN LOWER(status) = 'sales_inventory'
+            THEN ISNULL(sale_price,0) * ISNULL(qty,0)
+            ELSE 0 END)
+        -
+        SUM(CASE WHEN LOWER(status) = 'invt_received'
+            THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
+            ELSE 0 END)
+    ) AS profit
+
+FROM inventory_log
+WHERE product_name IS NOT NULL
+";
+   
 
     $params = [];
 
-    // 🔹 Date filter
+    /* DATE FILTER */
     if ($from && $to) {
-        $sql .= " AND CAST(o.order_date AS DATE) BETWEEN ? AND ? ";
+        $sql .= " AND CAST(order_date AS DATE) BETWEEN ? AND ? ";
         $params[] = $from;
         $params[] = $to;
     }
 
-    // 🔹 Branch filter
+    /* BRANCH FILTER */
     if ($branch != '') {
-        $sql .= " AND LTRIM(RTRIM(UPPER(o.to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
+        $sql .= " AND UPPER(LTRIM(RTRIM(to_branch))) = UPPER(LTRIM(RTRIM(?))) ";
         $params[] = $branch;
     }
 
     $sql .= "
-        GROUP BY o.product_name
-        ORDER BY profit DESC
+    GROUP BY product_name
+    ORDER BY profit DESC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, $params);
 
-    if ($stmt === false) returnError();
+    if ($stmt === false) {
+        die(print_r(sqlsrv_errors(), true));
+    }
 
     $data = [];
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $data[] = [
-            "product_name" => $row["product_name"],
-            "total_sales"  => (float)$row["total_sales"],
-            "total_cost"   => (float)$row["total_cost"],
-            "profit"       => (float)$row["profit"]
+            "product_name"        => $row["product_name"],
+            "total_sold_qty"      => (float)$row["total_sold_qty"],
+            "total_received_qty"  => (float)$row["total_received_qty"],
+            "remaining_stock"     => (float)$row["remaining_stock"],
+
+            "purchase_price"      => (float)$row["purchase_price"],
+            "sale_price"          => (float)$row["sale_price"],
+
+            "total_sales"         => (float)$row["total_sales"],
+            "total_cost"          => (float)$row["total_cost"],
+            "profit"              => (float)$row["profit"]
         ];
     }
 
@@ -136,13 +179,6 @@ function getProductProfit($conn) {
         "data" => $data
     ]);
 }
-
-
-
-
-
-
-
 
 # ================= Top SalesPersons =================
 
