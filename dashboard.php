@@ -72,63 +72,61 @@ function isAllZero($row, $keys) {
     return true;
 }
 
-# ================= PRODUCT PROFITABILITY =================
 function getProductProfit($conn)
 {
     $from   = $_GET['from'] ?? null;
     $to     = $_GET['to'] ?? null;
     $branch = $_GET['branch'] ?? '';
 
-    
+    $sql = "
+    SELECT
+        FORMAT(CAST(order_date AS DATE), 'yyyy-MM') AS month,
 
-$sql = "
-SELECT
-    product_name,
+        product_name,
 
-    SUM(CASE 
-        WHEN LOWER(status) = 'sales_inventory' 
-        THEN ISNULL(qty, 0)
-        ELSE 0 
-    END) AS total_sold_qty,
+        SUM(CASE 
+            WHEN LOWER(status) = 'sales_inventory' 
+            THEN ISNULL(qty, 0)
+            ELSE 0 
+        END) AS total_sold_qty,
 
-    SUM(CASE 
-        WHEN LOWER(status) = 'invt_received' 
-        THEN ISNULL(product_qty, 0)
-        ELSE 0 
-    END) AS total_received_qty,
+        SUM(CASE 
+            WHEN LOWER(status) = 'invt_received' 
+            THEN ISNULL(product_qty, 0)
+            ELSE 0 
+        END) AS total_received_qty,
 
-    (
-        SUM(CASE WHEN LOWER(status) = 'invt_received' THEN ISNULL(product_qty,0) ELSE 0 END)
-        -
-        SUM(CASE WHEN LOWER(status) = 'sales_inventory' THEN ISNULL(qty,0) ELSE 0 END)
-    ) AS remaining_stock,
+        (
+            SUM(CASE WHEN LOWER(status) = 'invt_received' THEN ISNULL(product_qty,0) ELSE 0 END)
+            -
+            SUM(CASE WHEN LOWER(status) = 'sales_inventory' THEN ISNULL(qty,0) ELSE 0 END)
+        ) AS remaining_stock,
 
-    SUM(CASE 
-        WHEN LOWER(status) = 'sales_inventory' 
-        THEN ISNULL(sale_price,0) * ISNULL(qty,0)
-        ELSE 0 
-    END) AS total_sales,
-
-    SUM(CASE 
-        WHEN LOWER(status) = 'invt_received' 
-        THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
-        ELSE 0 
-    END) AS total_cost,
-
-    (
-        SUM(CASE WHEN LOWER(status) = 'sales_inventory'
+        SUM(CASE 
+            WHEN LOWER(status) = 'sales_inventory' 
             THEN ISNULL(sale_price,0) * ISNULL(qty,0)
-            ELSE 0 END)
-        -
-        SUM(CASE WHEN LOWER(status) = 'invt_received'
-            THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
-            ELSE 0 END)
-    ) AS profit
+            ELSE 0 
+        END) AS total_sales,
 
-FROM inventory_log
-WHERE product_name IS NOT NULL
-";
-   
+        SUM(CASE 
+            WHEN LOWER(status) = 'invt_received' 
+            THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
+            ELSE 0 
+        END) AS total_cost,
+
+        (
+            SUM(CASE WHEN LOWER(status) = 'sales_inventory'
+                THEN ISNULL(sale_price,0) * ISNULL(qty,0)
+                ELSE 0 END)
+            -
+            SUM(CASE WHEN LOWER(status) = 'invt_received'
+                THEN ISNULL(purchase_price,0) * ISNULL(product_qty,0)
+                ELSE 0 END)
+        ) AS profit
+
+    FROM inventory_log
+    WHERE product_name IS NOT NULL
+    ";
 
     $params = [];
 
@@ -146,8 +144,10 @@ WHERE product_name IS NOT NULL
     }
 
     $sql .= "
-    GROUP BY product_name
-    ORDER BY profit DESC
+    GROUP BY 
+        FORMAT(CAST(order_date AS DATE), 'yyyy-MM'),
+        product_name
+    ORDER BY month DESC, profit DESC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, $params);
@@ -160,17 +160,14 @@ WHERE product_name IS NOT NULL
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $data[] = [
-            "product_name"        => $row["product_name"],
-            "total_sold_qty"      => (float)$row["total_sold_qty"],
-            "total_received_qty"  => (float)$row["total_received_qty"],
-            "remaining_stock"     => (float)$row["remaining_stock"],
-
-            "purchase_price"      => (float)$row["purchase_price"],
-            "sale_price"          => (float)$row["sale_price"],
-
-            "total_sales"         => (float)$row["total_sales"],
-            "total_cost"          => (float)$row["total_cost"],
-            "profit"              => (float)$row["profit"]
+            "month"              => $row["month"],
+            "product_name"       => $row["product_name"],
+            "total_sold_qty"     => (float)$row["total_sold_qty"],
+            "total_received_qty" => (float)$row["total_received_qty"],
+            "remaining_stock"    => (float)$row["remaining_stock"],
+            "total_sales"        => (float)$row["total_sales"],
+            "total_cost"         => (float)$row["total_cost"],
+            "profit"             => (float)$row["profit"]
         ];
     }
 
@@ -179,17 +176,18 @@ WHERE product_name IS NOT NULL
         "data" => $data
     ]);
 }
-
 # ================= Top SalesPersons =================
 
 function getTopSalespersons($conn) {
 
-    $from = $_GET['from'] ?? null;
-    $to   = $_GET['to'] ?? null;
+    $from   = $_GET['from'] ?? null;
+    $to     = $_GET['to'] ?? null;
     $branch = $_GET['branch'] ?? '';
 
     $sql = "
-        SELECT TOP 3
+    WITH BaseData AS (
+        SELECT 
+            FORMAT(TRY_CONVERT(DATE, o.order_date), 'yyyy-MM') AS month,
             o.created_by,
             u.fullname AS user_name,
             COUNT(*) AS total_orders,
@@ -199,37 +197,57 @@ function getTopSalespersons($conn) {
         LEFT JOIN users u ON u.id = o.created_by
         WHERE o.created_by IS NOT NULL
           AND o.created_by <> 0
+          AND TRY_CONVERT(DATE, o.order_date) IS NOT NULL
     ";
 
     $params = [];
 
-    # 🔹 DATE FILTER
     if ($from && $to) {
-        $sql .= " AND CAST(o.order_date AS DATE) BETWEEN ? AND ? ";
+        $sql .= " AND TRY_CONVERT(DATE, o.order_date) BETWEEN ? AND ? ";
         $params[] = $from;
         $params[] = $to;
     }
 
-    # 🔹 BRANCH FILTER
     if ($branch != '') {
         $sql .= " AND LTRIM(RTRIM(UPPER(o.to_branch))) = LTRIM(RTRIM(UPPER(?))) ";
         $params[] = $branch;
     }
 
-    # 🔥 GROUP + ORDER
     $sql .= "
-        GROUP BY o.created_by, u.fullname
-        ORDER BY total_sales DESC
+        GROUP BY 
+            FORMAT(TRY_CONVERT(DATE, o.order_date), 'yyyy-MM'),
+            o.created_by,
+            u.fullname
+    ),
+    Ranked AS (
+        SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY month
+            ORDER BY total_sales DESC
+        ) AS rn
+        FROM BaseData
+    )
+    SELECT *
+    FROM Ranked
+    WHERE rn <= 3
+    ORDER BY month DESC, total_sales DESC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, $params);
 
-    if ($stmt === false) returnError();
+    if ($stmt === false) {
+        echo json_encode([
+            "status" => false,
+            "error" => sqlsrv_errors()
+        ]);
+        return;
+    }
 
     $data = [];
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $data[] = [
+            "month" => $row["month"],
             "user_id" => $row["created_by"],
             "name" => $row["user_name"],
             "orders" => (int)$row["total_orders"],
@@ -243,29 +261,34 @@ function getTopSalespersons($conn) {
         "data" => $data
     ]);
 }
-
 # ================= Top PRODUCT =================
-
 function getTopProducts($conn) {
 
-    $from = $_GET['from'] ?? null;
-    $to   = $_GET['to'] ?? null;
+    $from   = $_GET['from'] ?? null;
+    $to     = $_GET['to'] ?? null;
     $branch = $_GET['branch'] ?? '';
 
     $sql = "
-        SELECT TOP 3
+    WITH MonthlyProductSales AS (
+        SELECT 
+            FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM') AS month,
             product_name,
             SUM(ISNULL(quantity, 0)) AS total_qty,
-            SUM(ISNULL(TRY_CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales
+            SUM(ISNULL(TRY_CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales,
+            ROW_NUMBER() OVER (
+                PARTITION BY FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM')
+                ORDER BY SUM(ISNULL(quantity, 0)) DESC
+            ) AS rn
         FROM orders
         WHERE final_amount IS NOT NULL
+          AND TRY_CONVERT(DATE, order_date) IS NOT NULL
     ";
 
     $params = [];
 
     // 🔥 DATE FILTER
     if ($from && $to) {
-        $sql .= " AND CAST(order_date AS DATE) BETWEEN ? AND ? ";
+        $sql .= " AND TRY_CONVERT(DATE, order_date) BETWEEN ? AND ? ";
         $params[] = $from;
         $params[] = $to;
     }
@@ -277,21 +300,35 @@ function getTopProducts($conn) {
     }
 
     $sql .= "
-        GROUP BY product_name
-        HAVING SUM(ISNULL(quantity, 0)) > 0
-        ORDER BY total_qty DESC
+        GROUP BY 
+            FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM'),
+            product_name
+    )
+    SELECT 
+        month,
+        product_name,
+        total_qty,
+        total_sales
+    FROM MonthlyProductSales
+    WHERE rn <= 3
+    ORDER BY month DESC, total_qty DESC
     ";
 
     $stmt = sqlsrv_query($conn, $sql, $params);
 
     if ($stmt === false) {
-        returnError();
+        echo json_encode([
+            "status" => false,
+            "error" => sqlsrv_errors()
+        ]);
+        return;
     }
 
     $data = [];
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $data[] = [
+            "month" => $row["month"],
             "product_name" => $row["product_name"],
             "total_qty" => (int)$row["total_qty"],
             "total_sales" => (float)$row["total_sales"]
@@ -309,21 +346,27 @@ function getTopProducts($conn) {
 
 function getTopCustomers($conn) {
 
-    $from = $_GET['from'] ?? null;
-    $to   = $_GET['to'] ?? null;
+    $from   = $_GET['from'] ?? null;
+    $to     = $_GET['to'] ?? null;
     $branch = $_GET['branch'] ?? '';
 
     $sql = "
-        SELECT TOP 3
+    WITH MonthlyCustomerSales AS (
+        SELECT 
+            FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM') AS month,
             customer_name,
-            SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales
+            SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) AS total_sales,
+            ROW_NUMBER() OVER (
+                PARTITION BY FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM')
+                ORDER BY SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) DESC
+            ) AS rn
         FROM orders
-        WHERE 1=1
+        WHERE TRY_CONVERT(DATE, order_date) IS NOT NULL
     ";
 
     // ✅ Date filter
     if ($from && $to) {
-        $sql .= " AND CAST(order_date AS DATE) BETWEEN ? AND ? ";
+        $sql .= " AND TRY_CONVERT(DATE, order_date) BETWEEN ? AND ? ";
     }
 
     // ✅ Branch filter
@@ -332,29 +375,43 @@ function getTopCustomers($conn) {
     }
 
     $sql .= "
-        GROUP BY customer_name
-        HAVING SUM(ISNULL(CAST(final_amount AS DECIMAL(18,2)), 0)) > 0
-        ORDER BY total_sales DESC
+        GROUP BY FORMAT(TRY_CONVERT(DATE, order_date), 'yyyy-MM'), customer_name
+    )
+    SELECT 
+        month,
+        customer_name,
+        total_sales
+    FROM MonthlyCustomerSales
+    WHERE rn <= 3
+    ORDER BY month DESC, total_sales DESC
     ";
 
-    // ✅ Params binding (SAFE)
     $params = [];
+
     if ($from && $to) {
         $params[] = $from;
         $params[] = $to;
     }
+
     if ($branch != '') {
         $params[] = $branch;
     }
 
     $stmt = sqlsrv_query($conn, $sql, $params);
 
-    if ($stmt === false) returnError();
+    if ($stmt === false) {
+        echo json_encode([
+            "status" => false,
+            "error" => sqlsrv_errors()
+        ]);
+        return;
+    }
 
     $data = [];
 
     while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
         $data[] = [
+            "month" => $row['month'],
             "customer_name" => $row['customer_name'],
             "total_sales" => (float)$row['total_sales']
         ];
@@ -365,8 +422,6 @@ function getTopCustomers($conn) {
         "data" => $data
     ]);
 }
-
-
 
 
 
@@ -436,47 +491,132 @@ function getCategoryChartBranch($conn) {
     $from = $_GET['from_date'] ?? null;
     $to   = $_GET['to_date'] ?? null;
 
+    $dateFilter = "";
+    if ($from && $to) {
+        $dateFilter = " AND CONVERT(date, i2.created_on) BETWEEN '$from' AND '$to' ";
+    }
+
     $sql = "
     SELECT 
         b.branch_name,
 
-        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='0' THEN 1 END) AS TBR_stock,
-        COUNT(CASE WHEN UPPER(p.category)='TBR' AND i.ordered='1' THEN 1 END) AS TBR_ordered,
+        -- TBR COUNT
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='TBR'
+            AND i2.ordered='0'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS TBR_stock,
 
-        STRING_AGG(
-            CASE WHEN UPPER(p.category)='TBR' AND i.sku_code IS NOT NULL 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='TBR'
+            AND i2.ordered='1'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS TBR_ordered,
+
+        -- TBR SKU (STOCK ONLY ✅)
+        (
+            SELECT STRING_AGG(sku_info, ', ')
+            FROM (
+                SELECT 
+                    i2.sku_code,
+                    CAST(i2.sku_code AS NVARCHAR) + '(' + CAST(COUNT(*) AS NVARCHAR) + ')' AS sku_info
+                FROM inventory i2
+                JOIN product_detail_description p2 ON p2.id = i2.product_id
+                WHERE UPPER(p2.category)='TBR'
+                AND i2.ordered = '0'
+                AND i2.to_branch = b.branch_name
+                $dateFilter
+                GROUP BY i2.sku_code
+            ) x
         ) AS TBR_skus,
 
-        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='0' THEN 1 END) AS LTR_stock,
-        COUNT(CASE WHEN UPPER(p.category)='LTR' AND i.ordered='1' THEN 1 END) AS LTR_ordered,
+        -- LTR COUNT
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='LTR'
+            AND i2.ordered='0'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS LTR_stock,
 
-        STRING_AGG(
-            CASE WHEN UPPER(p.category)='LTR' AND i.sku_code IS NOT NULL 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='LTR'
+            AND i2.ordered='1'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS LTR_ordered,
+
+        -- LTR SKU (STOCK ONLY ✅)
+        (
+            SELECT STRING_AGG(sku_info, ', ')
+            FROM (
+                SELECT 
+                    i2.sku_code,
+                    CAST(i2.sku_code AS NVARCHAR) + '(' + CAST(COUNT(*) AS NVARCHAR) + ')' AS sku_info
+                FROM inventory i2
+                JOIN product_detail_description p2 ON p2.id = i2.product_id
+                WHERE UPPER(p2.category)='LTR'
+                AND i2.ordered = '0'
+                AND i2.to_branch = b.branch_name
+                $dateFilter
+                GROUP BY i2.sku_code
+            ) x
         ) AS LTR_skus,
 
-        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='0' THEN 1 END) AS PCR_stock,
-        COUNT(CASE WHEN UPPER(p.category)='PCR' AND i.ordered='1' THEN 1 END) AS PCR_ordered,
+        -- PCR COUNT
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='PCR'
+            AND i2.ordered='0'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS PCR_stock,
 
-        STRING_AGG(
-            CASE WHEN UPPER(p.category)='PCR' AND i.sku_code IS NOT NULL 
-            THEN CAST(i.sku_code AS NVARCHAR(MAX)) END, ', '
+        (
+            SELECT COUNT(*) 
+            FROM inventory i2
+            JOIN product_detail_description p2 ON p2.id = i2.product_id
+            WHERE UPPER(p2.category)='PCR'
+            AND i2.ordered='1'
+            AND i2.to_branch = b.branch_name
+            $dateFilter
+        ) AS PCR_ordered,
+
+        -- PCR SKU (STOCK ONLY ✅)
+        (
+            SELECT STRING_AGG(sku_info, ', ')
+            FROM (
+                SELECT 
+                    i2.sku_code,
+                    CAST(i2.sku_code AS NVARCHAR) + '(' + CAST(COUNT(*) AS NVARCHAR) + ')' AS sku_info
+                FROM inventory i2
+                JOIN product_detail_description p2 ON p2.id = i2.product_id
+                WHERE UPPER(p2.category)='PCR'
+                AND i2.ordered = '0'
+                AND i2.to_branch = b.branch_name
+                $dateFilter
+                GROUP BY i2.sku_code
+            ) x
         ) AS PCR_skus
 
     FROM branch b
-    LEFT JOIN inventory i 
-        ON LTRIM(RTRIM(UPPER(i.to_branch))) = LTRIM(RTRIM(UPPER(b.branch_name)))
-    LEFT JOIN product_detail_description p 
-        ON p.id = i.product_id
-    WHERE 1=1
+    ORDER BY b.branch_name
     ";
-
-    if ($from && $to) {
-        $sql .= " AND CONVERT(date, i.created_on) BETWEEN '$from' AND '$to' ";
-    }
-
-    $sql .= " GROUP BY b.branch_name ORDER BY b.branch_name";
 
     $stmt = sqlsrv_query($conn, $sql);
     if ($stmt === false) returnError();
@@ -499,6 +639,8 @@ function getCategoryChartBranch($conn) {
         "data" => $data
     ]);
 }
+
+
 
 # ================= SINGLE BRANCH =================
 function getCategoryByBranch($conn) {
